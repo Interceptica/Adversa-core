@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from pathlib import Path
+
+import typer
+
+from adversa.artifacts.store import ArtifactStore
+from adversa.config.load import load_config, scaffold_default_config
+from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
+from adversa.state.models import ManifestState
+from adversa.workflow_temporal.client import (
+    get_client,
+    query_status,
+    signal_cancel,
+    signal_resume,
+    signal_update_config,
+    start_run,
+)
+
+app = typer.Typer(help="Adversa safe-by-default security CLI")
+
+
+@app.command()
+def init(path: str = "adversa.toml", force: bool = False) -> None:
+    target = Path(path)
+    if target.exists() and not force:
+        raise typer.BadParameter(f"{path} already exists. Use --force to overwrite.")
+
+    scaffold_default_config(target)
+    scope_template = target.parent / "scope.template.json"
+    if not scope_template.exists() or force:
+        scope_template.write_text(
+            json.dumps(
+                {
+                    "authorized": True,
+                    "target": "https://staging.example.com",
+                    "out_of_scope": ["production"],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    typer.echo(f"Initialized {target} and {scope_template}")
+
+
+@app.command()
+def run(
+    repo: str = typer.Option(..., "--repo"),
+    url: str = typer.Option(..., "--url"),
+    workspace: str = typer.Option("default", "--workspace"),
+    config: str = typer.Option("adversa.toml", "--config"),
+    i_acknowledge: bool = typer.Option(False, "--i-acknowledge"),
+    force: bool = typer.Option(False, "--force"),
+) -> None:
+    cfg = load_config(config)
+    if not (i_acknowledge or cfg.safety.acknowledgement):
+        raise typer.BadParameter("Acknowledgement required. Pass --i-acknowledge.")
+
+    try:
+        repo_path = ensure_repo_in_repos_root(Path(repo), Path(cfg.run.repos_root))
+    except ScopeViolationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    run_id = uuid.uuid4().hex[:12]
+    workflow_id = f"adversa-{workspace}-{run_id}"
+
+    store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
+    manifest = ManifestState(
+        workspace=workspace,
+        run_id=run_id,
+        url=url,
+        repo_path=str(repo_path),
+        workflow_id=workflow_id,
+    )
+    store.write_manifest(manifest)
+
+    payload = {
+        "workspace": workspace,
+        "repo_path": str(repo_path),
+        "url": url,
+        "effective_config_path": str(Path(config).resolve()),
+        "safe_mode": cfg.safety.safe_mode,
+        "run_id": run_id,
+        "force": force,
+    }
+
+    async def _start() -> None:
+        client = await get_client()
+        await start_run(client, workflow_id, payload)
+
+    asyncio.run(_start())
+    typer.echo(f"Started workflow {workflow_id}")
+
+
+@app.command()
+def resume(workspace: str = typer.Option(..., "--workspace"), run_id: str = typer.Option(..., "--run-id")) -> None:
+    cfg = load_config()
+    store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
+    manifest = store.read_manifest()
+    if not manifest or not manifest.workflow_id:
+        raise typer.BadParameter("No resumable manifest/workflow_id found.")
+
+    async def _resume() -> None:
+        client = await get_client()
+        await signal_resume(client, manifest.workflow_id)
+        await signal_update_config(client, manifest.workflow_id)
+
+    asyncio.run(_resume())
+    typer.echo(f"Resumed {manifest.workflow_id}")
+
+
+@app.command()
+def status(workspace: str = typer.Option(..., "--workspace"), run_id: str = typer.Option(..., "--run-id")) -> None:
+    cfg = load_config()
+    store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
+    manifest = store.read_manifest()
+    if not manifest or not manifest.workflow_id:
+        raise typer.BadParameter("No manifest/workflow_id found.")
+
+    async def _status() -> dict:
+        client = await get_client()
+        return await query_status(client, manifest.workflow_id)
+
+    s = asyncio.run(_status())
+    typer.echo(json.dumps(s, indent=2))
+
+
+@app.command()
+def cancel(workspace: str = typer.Option(..., "--workspace"), run_id: str = typer.Option(..., "--run-id")) -> None:
+    cfg = load_config()
+    store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
+    manifest = store.read_manifest()
+    if not manifest or not manifest.workflow_id:
+        raise typer.BadParameter("No manifest/workflow_id found.")
+
+    async def _cancel() -> None:
+        client = await get_client()
+        await signal_cancel(client, manifest.workflow_id)
+
+    asyncio.run(_cancel())
+    typer.echo(f"Canceled {manifest.workflow_id}")
+
+
+if __name__ == "__main__":
+    app()
