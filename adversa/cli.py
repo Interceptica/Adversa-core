@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from adversa.artifacts.store import ArtifactStore
+from adversa.artifacts.store import ArtifactStore, latest_run_id
 from adversa.config.load import load_config, scaffold_default_config
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
 from adversa.state.models import ManifestState
@@ -95,9 +95,19 @@ def run(
     typer.echo(f"Started workflow {workflow_id}")
 
 
+def _resolve_run_id(cfg_workspace_root: str, workspace: str, run_id: str | None) -> str:
+    if run_id:
+        return run_id
+    resolved = latest_run_id(Path(cfg_workspace_root), workspace)
+    if not resolved:
+        raise typer.BadParameter(f"No runs found for workspace '{workspace}'.")
+    return resolved
+
+
 @app.command()
-def resume(workspace: str = typer.Option(..., "--workspace"), run_id: str = typer.Option(..., "--run-id")) -> None:
+def resume(workspace: str = typer.Option(..., "--workspace"), run_id: str | None = typer.Option(None, "--run-id")) -> None:
     cfg = load_config()
+    run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
     store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
     manifest = store.read_manifest()
     if not manifest or not manifest.workflow_id:
@@ -113,8 +123,9 @@ def resume(workspace: str = typer.Option(..., "--workspace"), run_id: str = type
 
 
 @app.command()
-def status(workspace: str = typer.Option(..., "--workspace"), run_id: str = typer.Option(..., "--run-id")) -> None:
+def status(workspace: str = typer.Option(..., "--workspace"), run_id: str | None = typer.Option(None, "--run-id")) -> None:
     cfg = load_config()
+    run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
     store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
     manifest = store.read_manifest()
     if not manifest or not manifest.workflow_id:
@@ -125,12 +136,32 @@ def status(workspace: str = typer.Option(..., "--workspace"), run_id: str = type
         return await query_status(client, manifest.workflow_id)
 
     s = asyncio.run(_status())
-    typer.echo(json.dumps(s, indent=2))
+    index = store.read_index()
+    typer.echo(
+        json.dumps(
+            {
+                "workspace": workspace,
+                "run_id": run_id,
+                "workflow_id": manifest.workflow_id,
+                "url": manifest.url,
+                "current_phase": s.get("current_phase"),
+                "completed_phases": s.get("completed_phases", []),
+                "waiting_for_config": s.get("waiting_for_config", False),
+                "waiting_reason": s.get("waiting_reason"),
+                "paused": s.get("paused", False),
+                "canceled": s.get("canceled", False),
+                "artifact_count": len(index.files),
+                "artifacts": [f.path for f in index.files],
+            },
+            indent=2,
+        )
+    )
 
 
 @app.command()
-def cancel(workspace: str = typer.Option(..., "--workspace"), run_id: str = typer.Option(..., "--run-id")) -> None:
+def cancel(workspace: str = typer.Option(..., "--workspace"), run_id: str | None = typer.Option(None, "--run-id")) -> None:
     cfg = load_config()
+    run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
     store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
     manifest = store.read_manifest()
     if not manifest or not manifest.workflow_id:

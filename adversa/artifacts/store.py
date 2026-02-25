@@ -78,3 +78,14 @@ def _sha256(path: Path) -> str:
         while chunk := f.read(8192):
             h.update(chunk)
     return h.hexdigest()
+
+
+def latest_run_id(workspace_root: Path, workspace: str) -> str | None:
+    workspace_dir = workspace_root / workspace
+    if not workspace_dir.exists():
+        return None
+    runs = [p for p in workspace_dir.iterdir() if p.is_dir()]
+    if not runs:
+        return None
+    runs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return runs[0].name

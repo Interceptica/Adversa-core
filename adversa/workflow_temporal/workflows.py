@@ -35,6 +35,11 @@ class WorkflowEngine:
             self.status.completed_phases.append(phase)
 
 
+def is_config_required_error(message: str) -> bool:
+    lowered = message.lower()
+    return "config_required" in lowered or "missing env var" in lowered or "401" in lowered
+
+
 @workflow.defn
 class AdversaRunWorkflow:
     def __init__(self) -> None:
@@ -95,7 +100,7 @@ class AdversaRunWorkflow:
                     self.engine.record_completion(phase)
             except Exception as exc:
                 message = str(exc)
-                if "config_required" in message or "Missing env var" in message:
+                if is_config_required_error(message):
                     self.engine.mark_waiting("LLM provider config required")
                     await workflow.wait_condition(
                         lambda: self._update_config or self.engine.status.canceled,
