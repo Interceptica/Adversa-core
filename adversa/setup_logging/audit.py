@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from adversa.logging.redaction import redact_obj
+from adversa.setup_logging.redaction import redact_obj
 
 
 class AuditLogger:

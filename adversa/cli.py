@@ -24,7 +24,18 @@ app = typer.Typer(help="Adversa safe-by-default security CLI")
 
 
 @app.command()
-def init(path: str = "adversa.toml", force: bool = False) -> None:
+def init(
+    path: str = typer.Option(
+        "adversa.toml",
+        "--path",
+        help="Path where adversa.toml will be created.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite existing config/template files if they already exist.",
+    ),
+) -> None:
     target = Path(path)
     if target.exists() and not force:
         raise typer.BadParameter(f"{path} already exists. Use --force to overwrite.")
@@ -48,12 +59,36 @@ def init(path: str = "adversa.toml", force: bool = False) -> None:
 
 @app.command()
 def run(
-    repo: str = typer.Option(..., "--repo"),
-    url: str = typer.Option(..., "--url"),
-    workspace: str = typer.Option("default", "--workspace"),
-    config: str = typer.Option("adversa.toml", "--config"),
-    i_acknowledge: bool = typer.Option(False, "--i-acknowledge"),
-    force: bool = typer.Option(False, "--force"),
+    repo: str = typer.Option(
+        ...,
+        "--repo",
+        help="Path to authorized target repository. Must be under local repos/.",
+    ),
+    url: str = typer.Option(
+        ...,
+        "--url",
+        help="Authorized staging URL for this run (never production by default).",
+    ),
+    workspace: str = typer.Option(
+        "default",
+        "--workspace",
+        help="Workspace name used under runs/<workspace>/ for grouping run history.",
+    ),
+    config: str = typer.Option(
+        "adversa.toml",
+        "--config",
+        help="Path to adversa.toml configuration file.",
+    ),
+    i_acknowledge: bool = typer.Option(
+        False,
+        "--i-acknowledge",
+        help="Required explicit acknowledgement for authorized safe-mode testing.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-run phases even if schema-valid artifacts already exist.",
+    ),
 ) -> None:
     cfg = load_config(config)
     if not (i_acknowledge or cfg.safety.acknowledgement):
@@ -105,7 +140,18 @@ def _resolve_run_id(cfg_workspace_root: str, workspace: str, run_id: str | None)
 
 
 @app.command()
-def resume(workspace: str = typer.Option(..., "--workspace"), run_id: str | None = typer.Option(None, "--run-id")) -> None:
+def resume(
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        help="Workspace name. Use the same workspace used in `adversa run`.",
+    ),
+    run_id: str | None = typer.Option(
+        None,
+        "--run-id",
+        help="Specific run ID to resume. If omitted, resumes latest run in the workspace.",
+    ),
+) -> None:
     cfg = load_config()
     run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
     store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
@@ -123,7 +169,18 @@ def resume(workspace: str = typer.Option(..., "--workspace"), run_id: str | None
 
 
 @app.command()
-def status(workspace: str = typer.Option(..., "--workspace"), run_id: str | None = typer.Option(None, "--run-id")) -> None:
+def status(
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        help="Workspace name. Use the same workspace used in `adversa run`.",
+    ),
+    run_id: str | None = typer.Option(
+        None,
+        "--run-id",
+        help="Specific run ID to inspect. If omitted, shows latest run in the workspace.",
+    ),
+) -> None:
     cfg = load_config()
     run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
     store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
@@ -159,7 +216,18 @@ def status(workspace: str = typer.Option(..., "--workspace"), run_id: str | None
 
 
 @app.command()
-def cancel(workspace: str = typer.Option(..., "--workspace"), run_id: str | None = typer.Option(None, "--run-id")) -> None:
+def cancel(
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        help="Workspace name. Use the same workspace used in `adversa run`.",
+    ),
+    run_id: str | None = typer.Option(
+        None,
+        "--run-id",
+        help="Specific run ID to cancel. If omitted, cancels latest run in the workspace.",
+    ),
+) -> None:
     cfg = load_config()
     run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
     store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
