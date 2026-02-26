@@ -15,24 +15,37 @@ class WorkflowEngine:
     status: WorkflowStatus = field(default_factory=WorkflowStatus)
 
     def pause(self) -> None:
-        self.status.paused = True
+        if not self.status.canceled:
+            self.status.paused = True
 
     def resume(self) -> None:
+        if not self.status.canceled:
+            self.status.paused = False
+
+    def cancel(self) -> None:
+        self.status.canceled = True
         self.status.paused = False
         self.status.waiting_for_config = False
         self.status.waiting_reason = None
 
-    def cancel(self) -> None:
-        self.status.canceled = True
-
     def mark_waiting(self, reason: str) -> None:
         self.status.waiting_for_config = True
         self.status.waiting_reason = reason
+        self.status.paused = False
+
+    def mark_config_updated(self) -> None:
+        self.status.waiting_for_config = False
+        self.status.waiting_reason = None
+        self.status.last_error = None
+
+    def start_phase(self, phase: str) -> None:
+        self.status.current_phase = phase
 
     def record_completion(self, phase: str) -> None:
         self.status.current_phase = phase
         if phase not in self.status.completed_phases:
             self.status.completed_phases.append(phase)
+        self.status.last_error = None
 
 
 def is_config_required_error(message: str) -> bool:
@@ -61,6 +74,7 @@ class AdversaRunWorkflow:
     @workflow.signal
     def update_config(self) -> None:
         self._update_config = True
+        self.engine.mark_config_updated()
         self.engine.resume()
 
     @workflow.query
@@ -70,47 +84,50 @@ class AdversaRunWorkflow:
     @workflow.run
     async def run(self, payload: dict) -> dict:
         inp = WorkflowInput.model_validate(payload)
+        self.engine.status.artifact_index_path = f"{inp.workspace}/{inp.run_id}/artifacts/index.json"
 
         for phase in PHASES:
-            while self.engine.status.paused and not self.engine.status.canceled:
-                await workflow.sleep(timedelta(seconds=2))
+            phase_done = False
+            while not phase_done and not self.engine.status.canceled:
+                self.engine.start_phase(phase)
+                while self.engine.status.paused and not self.engine.status.canceled:
+                    await workflow.sleep(timedelta(seconds=2))
 
-            if self.engine.status.canceled:
-                break
+                if self.engine.status.canceled:
+                    break
 
-            try:
-                result = await workflow.execute_activity(
-                    run_phase_activity,
-                    inp.workspace,
-                    inp.workspace,
-                    inp.run_id,
-                    inp.repo_path,
-                    inp.url,
-                    phase,
-                    inp.force,
-                    start_to_close_timeout=timedelta(minutes=10),
-                    retry_policy=RetryPolicy(
-                        initial_interval=timedelta(seconds=2),
-                        backoff_coefficient=2.0,
-                        maximum_interval=timedelta(seconds=30),
-                        maximum_attempts=3,
-                    ),
-                )
-                if result.get("status") == "completed":
-                    self.engine.record_completion(phase)
-            except Exception as exc:
-                message = str(exc)
-                if is_config_required_error(message):
-                    self.engine.mark_waiting("LLM provider config required")
-                    await workflow.wait_condition(
-                        lambda: self._update_config or self.engine.status.canceled,
-                        timeout=timedelta(hours=24),
+                try:
+                    result = await workflow.execute_activity(
+                        run_phase_activity,
+                        inp.workspace,
+                        inp.workspace,
+                        inp.run_id,
+                        inp.repo_path,
+                        inp.url,
+                        phase,
+                        inp.force,
+                        start_to_close_timeout=timedelta(minutes=10),
+                        retry_policy=RetryPolicy(
+                            initial_interval=timedelta(seconds=2),
+                            backoff_coefficient=2.0,
+                            maximum_interval=timedelta(seconds=30),
+                            maximum_attempts=3,
+                        ),
                     )
-                    self._update_config = False
-                    if self.engine.status.canceled:
-                        break
-                    continue
-                self.engine.status.last_error = message
-                raise
+                    if result.get("status") in {"completed", "skipped"}:
+                        self.engine.record_completion(phase)
+                    phase_done = True
+                except Exception as exc:
+                    message = str(exc)
+                    if is_config_required_error(message):
+                        self.engine.mark_waiting("LLM provider config required")
+                        await workflow.wait_condition(
+                            lambda: self._update_config or self.engine.status.canceled,
+                            timeout=timedelta(hours=24),
+                        )
+                        self._update_config = False
+                        continue
+                    self.engine.status.last_error = message
+                    raise
 
         return self.engine.status.model_dump()
