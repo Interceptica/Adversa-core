@@ -9,5 +9,9 @@ def test_waiting_transition_cycle() -> None:
     assert engine.status.waiting_for_config is True
 
     engine.resume()
+    assert engine.status.waiting_for_config is True
+    assert engine.status.waiting_reason == "LLM provider config required"
+
+    engine.mark_config_updated()
     assert engine.status.waiting_for_config is False
     assert engine.status.waiting_reason is None
