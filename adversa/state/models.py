@@ -8,62 +8,91 @@ from pydantic import BaseModel, Field
 
 
 class EvidenceRef(BaseModel):
-    id: str
-    path: str
-    note: str | None = None
+    id: str = Field(description="Stable identifier for the evidence item within a phase output.")
+    path: str = Field(description="Workspace-relative path to the evidence artifact on disk.")
+    note: str | None = Field(default=None, description="Optional human-readable context about why this evidence matters.")
 
 
 class PhaseOutput(BaseModel):
-    phase: Literal["intake", "prerecon", "recon", "vuln", "report"]
-    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    summary: str
-    evidence: list[EvidenceRef] = Field(default_factory=list)
-    data: dict[str, Any] = Field(default_factory=dict)
+    phase: Literal["intake", "prerecon", "recon", "vuln", "report"] = Field(
+        description="Lifecycle phase that produced this output."
+    )
+    generated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="UTC timestamp when this phase output was generated.",
+    )
+    summary: str = Field(description="Short narrative summary of the phase result.")
+    evidence: list[EvidenceRef] = Field(
+        default_factory=list,
+        description="Evidence references that support the phase summary and data.",
+    )
+    data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Structured phase-specific payload written alongside the summary.",
+    )
 
 
 class ArtifactEntry(BaseModel):
-    path: str
-    sha256: str
+    path: str = Field(description="Run-relative path to a generated artifact file.")
+    sha256: str = Field(description="SHA-256 digest of the artifact contents for reproducibility checks.")
 
 
 class ArtifactIndex(BaseModel):
-    files: list[ArtifactEntry] = Field(default_factory=list)
+    files: list[ArtifactEntry] = Field(
+        default_factory=list,
+        description="Deterministically sorted list of generated artifacts and their content hashes.",
+    )
 
 
 class ManifestState(BaseModel):
-    workspace: str
-    run_id: str
-    url: str
-    repo_path: str
-    workflow_id: str | None = None
-    current_phase: str | None = None
-    completed_phases: list[str] = Field(default_factory=list)
-    waiting_for_config: bool = False
-    waiting_reason: str | None = None
-    paused: bool = False
-    canceled: bool = False
-    last_error: str | None = None
+    workspace: str = Field(description="Workspace root or workspace key used to store this run.")
+    run_id: str = Field(description="Unique identifier for this run within the workspace.")
+    url: str = Field(description="Target URL associated with the run.")
+    repo_path: str = Field(description="Repository path for the authorized target under the local repos directory.")
+    workflow_id: str | None = Field(default=None, description="Temporal workflow identifier associated with this run.")
+    current_phase: str | None = Field(default=None, description="Phase currently executing or most recently executed.")
+    completed_phases: list[str] = Field(
+        default_factory=list,
+        description="Ordered list of phases that completed successfully for this run.",
+    )
+    waiting_for_config: bool = Field(
+        default=False,
+        description="Whether execution is blocked pending operator configuration updates.",
+    )
+    waiting_reason: str | None = Field(default=None, description="Operator-facing explanation for the current waiting state.")
+    paused: bool = Field(default=False, description="Whether execution is intentionally paused by operator signal.")
+    canceled: bool = Field(default=False, description="Whether the run has been canceled and should not continue.")
+    last_error: str | None = Field(default=None, description="Most recent terminal or non-retryable error message, if any.")
 
 
 class WorkflowInput(BaseModel):
-    workspace: str
-    repo_path: str
-    url: str
-    effective_config_path: str
-    safe_mode: bool
-    run_id: str
-    force: bool = False
+    workspace: str = Field(description="Workspace root or workspace key where run artifacts should be stored.")
+    repo_path: str = Field(description="Authorized target repository path under the local repos directory.")
+    url: str = Field(description="Target URL for the Adversa run.")
+    effective_config_path: str = Field(description="Resolved configuration file path used for this execution.")
+    safe_mode: bool = Field(description="Whether the run is restricted to non-destructive safe-mode behavior.")
+    run_id: str = Field(description="Unique identifier assigned to this workflow run.")
+    force: bool = Field(default=False, description="Whether to re-run phases even when valid artifacts already exist.")
 
 
 class WorkflowStatus(BaseModel):
-    current_phase: str | None = None
-    completed_phases: list[str] = Field(default_factory=list)
-    artifact_index_path: str | None = None
-    last_error: str | None = None
-    waiting_reason: str | None = None
-    waiting_for_config: bool = False
-    paused: bool = False
-    canceled: bool = False
+    current_phase: str | None = Field(default=None, description="Phase currently executing or most recently executed.")
+    completed_phases: list[str] = Field(
+        default_factory=list,
+        description="Ordered list of phases that have completed or been deterministically skipped.",
+    )
+    artifact_index_path: str | None = Field(
+        default=None,
+        description="Workspace-relative path to the artifact index for this run.",
+    )
+    last_error: str | None = Field(default=None, description="Most recent terminal or non-retryable error message, if any.")
+    waiting_reason: str | None = Field(default=None, description="Operator-facing explanation for why the workflow is waiting.")
+    waiting_for_config: bool = Field(
+        default=False,
+        description="Whether the workflow is blocked pending configuration changes.",
+    )
+    paused: bool = Field(default=False, description="Whether the workflow is paused by signal and waiting to resume.")
+    canceled: bool = Field(default=False, description="Whether the workflow has been canceled.")
 
 
 PHASES = ["intake", "prerecon", "recon", "vuln", "report"]
