@@ -23,7 +23,7 @@ Configuration precedence is:
 
 Currently implemented environment overrides:
 
-- `ADVERSA_PROVIDER` (`anthropic` or `openai_compatible`)
+- `ADVERSA_PROVIDER` (`anthropic`, `openai_compatible`, or `router`)
 - `ADVERSA_MODEL`
 
 ## Full Example
@@ -44,6 +44,17 @@ network_discovery_enabled = false
 workspace_root = "runs"
 repos_root = "repos"
 task_queue = "adversa-task-queue"
+
+[[rules]]
+action = "focus"
+target_type = "analyzer"
+target = "auth_model_builder"
+phases = ["recon"]
+
+[[rules]]
+action = "avoid"
+target_type = "phase"
+target = "vuln"
 ```
 
 ## [provider]
@@ -52,6 +63,7 @@ task_queue = "adversa-task-queue"
   - Supported values:
     - `anthropic`
     - `openai_compatible`
+    - `router`
 
 - `model` (string, default: `"claude-3-5-sonnet-latest"`)
   - Model identifier passed to provider client logic.
@@ -86,6 +98,38 @@ task_queue = "adversa-task-queue"
 
 - `task_queue` (string, default: `"adversa-task-queue"`)
   - Temporal task queue for workflow/activities.
+
+## [[rules]]
+
+- `action` (string, required)
+  - Supported values:
+    - `focus`
+    - `avoid`
+  - `focus` raises priority for matching analyzers during phase execution.
+  - `avoid` blocks or removes matching execution targets.
+
+- `target_type` (string, required)
+  - Supported values:
+    - `phase`
+    - `analyzer`
+    - `tag`
+
+- `target` (string, required)
+  - Match value for the selected `target_type`.
+  - Examples:
+    - phase: `recon`
+    - analyzer: `auth_model_builder`
+    - tag: `discovery`
+
+- `phases` (array of strings, optional)
+  - Restricts the rule to the listed phases.
+  - If omitted, the rule applies to all phases.
+
+Behavior notes:
+
+- `focus` changes analyzer ordering deterministically. Higher-priority matches are executed first, with name ordering as the stable tie-breaker.
+- `avoid` with `target_type = "phase"` is a hard runtime block. The phase fails safely and emits audit evidence.
+- `avoid` with `target_type = "analyzer"` or `target_type = "tag"` removes matching analyzers from the selected execution set for that phase.
 
 ## Generated Defaults
 
