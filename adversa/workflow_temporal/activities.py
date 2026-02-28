@@ -10,6 +10,7 @@ from adversa.config.models import AdversaConfig
 from adversa.llm.errors import LLMErrorKind, LLMProviderError
 from adversa.llm.providers import ProviderClient
 from adversa.state.models import EvidenceRef, ManifestState, PhaseOutput
+from adversa.state.schemas import validate_phase_output
 
 
 @activity.defn
@@ -41,6 +42,13 @@ async def run_phase_activity(
     )
 
     files = store.write_phase_artifacts(output)
+    if not validate_phase_output(files["output"]):
+        message = f"Invalid phase output generated for phase '{phase}'"
+        manifest.last_error = message
+        store.write_manifest(manifest)
+        activity.logger.error(message)
+        raise ApplicationError(message, type="invalid_phase_output", non_retryable=True)
+
     evidence_path = store.phase_dir(phase) / "evidence" / "stub.txt"
     evidence_path.write_text("evidence", encoding="utf-8")
     store.append_index([*files.values(), evidence_path])

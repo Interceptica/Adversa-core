@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -102,4 +103,4 @@ def schema_export(target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     for model in [EvidenceRef, PhaseOutput, ArtifactIndex, ManifestState, WorkflowInput, WorkflowStatus]:
         path = target_dir / f"{model.__name__}.json"
-        path.write_text(model.model_json_schema().__repr__(), encoding="utf-8")
+        path.write_text(json.dumps(model.model_json_schema(), indent=2, sort_keys=True), encoding="utf-8")

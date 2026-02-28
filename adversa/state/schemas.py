@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from adversa.state.models import ArtifactIndex, ManifestState, PhaseOutput
+from adversa.state.models import ArtifactIndex, ManifestState, PhaseOutput, schema_export
 
 
 def validate_phase_output(path: Path) -> bool:
@@ -31,3 +31,7 @@ def validate_index(path: Path) -> bool:
         return True
     except Exception:
         return False
+
+
+def export_schemas(target_dir: Path) -> None:
+    schema_export(target_dir)
