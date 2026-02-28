@@ -145,7 +145,8 @@ repos_root = "{(repo_project_root / 'repos').as_posix()}"
         config_path=str(config_path),
     )
 
-    assert captured["skills"] == ["/adversa/agent_runtime/skills"]
+    assert "skills" not in captured
+    assert "memory" not in captured
     assert report.target_url == "https://staging.example.com/api/users"
     assert report.canonical_url == "https://staging.example.com/api/users"
     assert report.repo_root_validated is True

@@ -19,8 +19,6 @@ from adversa.state.models import PreReconReport
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRERECON_PROMPT_PATH = PROJECT_ROOT / "adversa" / "prompts" / "pre-recon-code.txt"
-PRERECON_SKILLS_PATH = "/adversa/agent_runtime/skills"
-PRERECON_MEMORY_PATHS = ["/AGENTS.md", "/adversa/agent_runtime/memory/prerecon/AGENTS.md"]
 
 
 @dataclass(frozen=True)
@@ -72,8 +70,6 @@ def build_prerecon_report(
             load_runtime_boundary_middleware(context, allowed_repo_virtual_prefix=inputs.repo_virtual_path),
         ],
         subagents=[_repo_research_subagent()],
-        skills=[PRERECON_SKILLS_PATH],
-        memory=PRERECON_MEMORY_PATHS,
         response_format=PreReconReport,
         backend=FilesystemBackend(root_dir=PROJECT_ROOT, virtual_mode=True),
         name="adversa-prerecon",
