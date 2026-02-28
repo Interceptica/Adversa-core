@@ -4,7 +4,9 @@ from io import StringIO
 
 import pytest
 from rich.console import Console
+from typer.testing import CliRunner
 
+from adversa.cli import app
 from adversa.ui.shell import AdversaShell
 from adversa.ui.slash_commands import complete_slash_commands, parse_slash_command
 
@@ -88,3 +90,19 @@ def test_shell_unknown_command_fails_cleanly() -> None:
 
     with pytest.raises(ValueError, match="Unknown slash command"):
         shell.handle_line("/unknown")
+
+
+def test_cli_defaults_to_shell_when_no_subcommand(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = {"called": False}
+
+    class FakeShell:
+        def run(self) -> None:
+            state["called"] = True
+
+    monkeypatch.setattr("adversa.cli._build_shell", lambda: FakeShell())
+
+    runner = CliRunner()
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert state["called"] is True

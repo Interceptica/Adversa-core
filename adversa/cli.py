@@ -26,6 +26,28 @@ from adversa.workflow_temporal.client import (
 app = typer.Typer(help="Adversa safe-by-default security CLI")
 
 
+def _build_shell() -> AdversaShell:
+    return AdversaShell(
+        handlers={
+            "help": lambda **_: "",
+            "?": lambda **_: "",
+            "run": run_command,
+            "status": status_command,
+            "resume": resume_command,
+            "cancel": cancel_command,
+            "init": init_command,
+            "config": lambda **_: typer.echo("Config path: adversa.toml"),
+            "exit": lambda **_: None,
+        }
+    )
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        _build_shell().run()
+
+
 def init_command(
     path: str = typer.Option(
         "adversa.toml",
@@ -390,19 +412,7 @@ def cancel(
 
 @app.command()
 def shell() -> None:
-    AdversaShell(
-        handlers={
-            "help": lambda **_: "",
-            "?": lambda **_: "",
-            "run": run_command,
-            "status": status_command,
-            "resume": resume_command,
-            "cancel": cancel_command,
-            "init": init_command,
-            "config": lambda **_: typer.echo("Config path: adversa.toml"),
-            "exit": lambda **_: None,
-        }
-    ).run()
+    _build_shell().run()
 
 
 if __name__ == "__main__":
