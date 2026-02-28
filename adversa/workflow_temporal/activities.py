@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -11,6 +12,44 @@ from adversa.llm.errors import LLMErrorKind, LLMProviderError
 from adversa.llm.providers import ProviderClient
 from adversa.state.models import EvidenceRef, ManifestState, PhaseOutput
 from adversa.state.schemas import validate_phase_output
+
+
+PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, dict]] = {
+    "intake": {
+        "scope.json": {"authorized": True, "target_type": "staging", "url_source": "workflow_input"},
+        "plan.json": {"phases": ["intake", "prerecon", "recon", "vuln", "report"], "safe_mode": True},
+        "coverage_intake.json": {"phase": "intake", "status": "stub"},
+    },
+    "prerecon": {
+        "pre_recon.json": {"phase": "prerecon", "status": "stub"},
+    },
+    "recon": {
+        "system_map.json": {"phase": "recon", "assets": []},
+        "attack_surface.json": {"phase": "recon", "entries": []},
+    },
+    "vuln": {
+        "findings.json": {"phase": "vuln", "findings": [], "safe_mode": True},
+        "risk_register.json": {"phase": "vuln", "risks": [], "safe_mode": True},
+    },
+    "report": {
+        "report.md": "# Adversa Report\n\nStub safe-mode report.\n",
+        "exec_summary.md": "# Executive Summary\n\nStub summary.\n",
+        "retest_plan.json": {"phase": "report", "retest_steps": []},
+    },
+}
+
+
+def _write_extra_phase_artifacts(store: ArtifactStore, phase: str) -> list[Path]:
+    phase_dir = store.phase_dir(phase)
+    written: list[Path] = []
+    for filename, payload in PHASE_EXTRA_ARTIFACTS.get(phase, {}).items():
+        path = phase_dir / filename
+        if filename.endswith(".md"):
+            path.write_text(str(payload), encoding="utf-8")
+        else:
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        written.append(path)
+    return written
 
 
 @activity.defn
@@ -51,7 +90,8 @@ async def run_phase_activity(
 
     evidence_path = store.phase_dir(phase) / "evidence" / "stub.txt"
     evidence_path.write_text("evidence", encoding="utf-8")
-    store.append_index([*files.values(), evidence_path])
+    extra_files = _write_extra_phase_artifacts(store, phase)
+    store.append_index([*files.values(), evidence_path, *extra_files])
 
     if phase not in manifest.completed_phases:
         manifest.completed_phases.append(phase)
