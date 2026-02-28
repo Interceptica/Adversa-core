@@ -24,7 +24,7 @@ def load_config(config_path: str | Path | None = None) -> AdversaConfig:
         provider.model = env_model
 
     env_provider = os.getenv("ADVERSA_PROVIDER")
-    if env_provider in {"anthropic", "openai_compatible"}:
+    if env_provider in {"anthropic", "openai_compatible", "router"}:
         provider.provider = env_provider
 
     return cfg
