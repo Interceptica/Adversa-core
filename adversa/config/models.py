@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -31,23 +31,48 @@ class RunConfig(BaseModel):
     task_queue: str = "adversa-task-queue"
 
 
-class RuleConfig(BaseModel):
-    action: Literal["focus", "avoid"] = Field(description="Whether the rule prioritizes or blocks matching execution.")
-    target_type: Literal["phase", "analyzer", "tag"] = Field(
-        description="What kind of runtime object this rule matches."
+class RuleMatcherConfig(BaseModel):
+    description: str | None = Field(default=None, description="Optional human-readable explanation for the rule.")
+    type: Literal["subdomain", "path", "host", "method", "repo_path", "tag", "phase", "analyzer"] = Field(
+        description="User-facing rule surface type."
     )
-    target: str = Field(description="Phase name, analyzer name, or tag value to match.")
+    value: str = Field(description="Match expression for the selected type.")
     phases: list[str] = Field(
         default_factory=list,
         description="Optional list of phases where the rule applies. Empty means all phases.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_aliases(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        if "value" not in normalized:
+            for alias in ("url_path", "target", "pattern"):
+                if alias in normalized:
+                    normalized["value"] = normalized[alias]
+                    break
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_value(self) -> "RuleMatcherConfig":
+        if not self.value.strip():
+            raise ValueError("rule value must not be empty")
+        return self
+
+
+class RulesConfig(BaseModel):
+    focus: list[RuleMatcherConfig] = Field(default_factory=list)
+    avoid: list[RuleMatcherConfig] = Field(default_factory=list)
 
 
 class AdversaConfig(BaseModel):
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     run: RunConfig = Field(default_factory=RunConfig)
-    rules: list[RuleConfig] = Field(default_factory=list)
+    rules: RulesConfig = Field(default_factory=RulesConfig)
 
 
 class EffectiveRunInput(BaseModel):

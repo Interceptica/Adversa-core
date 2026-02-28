@@ -45,16 +45,28 @@ workspace_root = "runs"
 repos_root = "repos"
 task_queue = "adversa-task-queue"
 
-[[rules]]
-action = "focus"
-target_type = "analyzer"
-target = "auth_model_builder"
-phases = ["recon"]
+[[rules.focus]]
+description = "Prioritize beta admin API"
+type = "subdomain"
+value = "beta-admin"
+phases = ["recon", "vuln"]
 
-[[rules]]
-action = "avoid"
-target_type = "phase"
-target = "vuln"
+[[rules.focus]]
+description = "Focus on profile endpoints"
+type = "path"
+value = "/api/v2/user-profile*"
+phases = ["recon", "vuln"]
+
+[[rules.avoid]]
+description = "Do not touch logout"
+type = "path"
+value = "/logout"
+
+[[rules.avoid]]
+description = "Keep analysis inside authorized repository roots"
+type = "repo_path"
+value = "repos/target"
+phases = ["intake", "prerecon", "recon", "vuln", "report"]
 ```
 
 ## [provider]
@@ -99,27 +111,34 @@ target = "vuln"
 - `task_queue` (string, default: `"adversa-task-queue"`)
   - Temporal task queue for workflow/activities.
 
-## [[rules]]
+## [rules]
 
-- `action` (string, required)
-  - Supported values:
-    - `focus`
-    - `avoid`
-  - `focus` raises priority for matching analyzers during phase execution.
-  - `avoid` blocks or removes matching execution targets.
+Adversa now exposes user-facing rule groups:
 
-- `target_type` (string, required)
-  - Supported values:
+- `[[rules.focus]]`
+- `[[rules.avoid]]`
+
+Each rule entry supports:
+
+- `description` (string, optional)
+  - Human-readable audit text shown when the rule is applied.
+
+- `type` (string, required)
+  - Supported operator-facing values:
+    - `subdomain`
+    - `path`
+    - `host`
+    - `method`
+    - `repo_path`
+    - `tag`
+  - Internal targeting values still accepted when you need direct execution control:
     - `phase`
     - `analyzer`
-    - `tag`
 
-- `target` (string, required)
-  - Match value for the selected `target_type`.
-  - Examples:
-    - phase: `recon`
-    - analyzer: `auth_model_builder`
-    - tag: `discovery`
+- `value` (string, required)
+  - Match expression for the selected `type`.
+  - Glob matching is supported for `host`, `subdomain`, `path`, `method`, and `repo_path`.
+  - `url_path` is accepted as an alias for `value` in TOML.
 
 - `phases` (array of strings, optional)
   - Restricts the rule to the listed phases.
@@ -127,9 +146,12 @@ target = "vuln"
 
 Behavior notes:
 
-- `focus` changes analyzer ordering deterministically. Higher-priority matches are executed first, with name ordering as the stable tie-breaker.
-- `avoid` with `target_type = "phase"` is a hard runtime block. The phase fails safely and emits audit evidence.
-- `avoid` with `target_type = "analyzer"` or `target_type = "tag"` removes matching analyzers from the selected execution set for that phase.
+- `focus` deterministically prioritizes analyzers whose execution surfaces overlap the matched runtime target. Name ordering remains the stable tie-breaker.
+- `avoid` is a hard runtime block when the current phase target itself matches the rule boundary.
+- `avoid` also removes analyzers whose surfaces would cross a disallowed target boundary during execution.
+- Applied rules are logged to `logs/tool_calls.jsonl` with the resolved runtime target for auditability.
+
+Only the grouped `[[rules.focus]]` and `[[rules.avoid]]` format is supported. The older flat `[[rules]]` form is not accepted.
 
 ## Generated Defaults
 
