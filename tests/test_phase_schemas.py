@@ -22,6 +22,8 @@ def test_schema_export_writes_valid_json_schema_files(tmp_path: Path) -> None:
         "PhaseExpectation.json",
         "PlanWarning.json",
         "RunPlan.json",
+        "ScopeContract.json",
+        "IntakeCoverage.json",
         "ArtifactIndex.json",
         "ManifestState.json",
         "WorkflowInput.json",

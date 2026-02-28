@@ -92,6 +92,55 @@ class RunPlan(BaseModel):
     safe_mode: bool = Field(description="Whether the plan is constrained to safe verification mode.")
 
 
+class ScopeContract(BaseModel):
+    target_url: str = Field(description="Normalized authorized target URL for this run.")
+    repo_path: str = Field(description="Authorized repository path under the local repos root.")
+    workspace: str = Field(description="Workspace name used to group this run.")
+    authorized: bool = Field(description="Whether the operator explicitly acknowledged authorization.")
+    safe_mode: bool = Field(description="Whether execution remains constrained to safe mode.")
+    allowed_hosts: list[str] = Field(
+        default_factory=list,
+        description="Hosts explicitly allowed for this run.",
+    )
+    allowed_paths: list[str] = Field(
+        default_factory=list,
+        description="Path prefixes or concrete paths explicitly allowed for this run.",
+    )
+    exclusions: list[str] = Field(
+        default_factory=list,
+        description="Operator-provided out-of-scope targets or exclusions.",
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+        description="Operator-provided notes that should accompany the scope contract.",
+    )
+    rules_summary: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Summary of focus/avoid rules resolved from intake or config.",
+    )
+    confidence_gaps: list[str] = Field(
+        default_factory=list,
+        description="Scope ambiguities that later phases should preserve as warnings.",
+    )
+
+
+class IntakeCoverage(BaseModel):
+    phase: Literal["intake"] = Field(description="Coverage artifact phase identifier.")
+    status: Literal["complete", "incomplete"] = Field(description="Whether intake gathered enough information to proceed.")
+    answered_fields: list[str] = Field(
+        default_factory=list,
+        description="Fields that were explicitly answered during the interactive intake flow.",
+    )
+    pending_fields: list[str] = Field(
+        default_factory=list,
+        description="Fields still missing or deferred after intake completion.",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Operator-facing intake warnings captured during scope clarification.",
+    )
+
+
 class ArtifactEntry(BaseModel):
     path: str = Field(description="Run-relative path to a generated artifact file.")
     sha256: str = Field(description="SHA-256 digest of the artifact contents for reproducibility checks.")
@@ -160,6 +209,19 @@ PHASES = ["intake", "prerecon", "recon", "vuln", "report"]
 
 def schema_export(target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
-    for model in [EvidenceRef, PhaseOutput, PlanBudget, PhaseExpectation, PlanWarning, RunPlan, ArtifactIndex, ManifestState, WorkflowInput, WorkflowStatus]:
+    for model in [
+        EvidenceRef,
+        PhaseOutput,
+        PlanBudget,
+        PhaseExpectation,
+        PlanWarning,
+        RunPlan,
+        ScopeContract,
+        IntakeCoverage,
+        ArtifactIndex,
+        ManifestState,
+        WorkflowInput,
+        WorkflowStatus,
+    ]:
         path = target_dir / f"{model.__name__}.json"
         path.write_text(json.dumps(model.model_json_schema(), indent=2, sort_keys=True), encoding="utf-8")
