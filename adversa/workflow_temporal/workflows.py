@@ -119,6 +119,7 @@ class AdversaRunWorkflow:
                         inp.url,
                         phase,
                         inp.force,
+                        inp.effective_config_path,
                         start_to_close_timeout=PHASE_ACTIVITY_TIMEOUT,
                         retry_policy=PHASE_ACTIVITY_RETRY_POLICY,
                     )

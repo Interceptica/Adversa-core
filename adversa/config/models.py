@@ -31,10 +31,23 @@ class RunConfig(BaseModel):
     task_queue: str = "adversa-task-queue"
 
 
+class RuleConfig(BaseModel):
+    action: Literal["focus", "avoid"] = Field(description="Whether the rule prioritizes or blocks matching execution.")
+    target_type: Literal["phase", "analyzer", "tag"] = Field(
+        description="What kind of runtime object this rule matches."
+    )
+    target: str = Field(description="Phase name, analyzer name, or tag value to match.")
+    phases: list[str] = Field(
+        default_factory=list,
+        description="Optional list of phases where the rule applies. Empty means all phases.",
+    )
+
+
 class AdversaConfig(BaseModel):
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     run: RunConfig = Field(default_factory=RunConfig)
+    rules: list[RuleConfig] = Field(default_factory=list)
 
 
 class EffectiveRunInput(BaseModel):
