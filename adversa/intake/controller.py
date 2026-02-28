@@ -103,7 +103,7 @@ def interactive_intake(
     )
     coverage = build_intake_coverage(
         answered_fields=["repo", "url", "workspace", "i_acknowledge", "focus_paths", "avoid_paths", "exclusions", "notes"],
-        warnings=[warning.message for warning in plan.warnings] + scope.confidence_gaps,
+        warnings=[warning.message for warning in plan.warnings] + scope.confidence_gaps + scope.warnings,
     )
 
     evidence_path = store.phase_dir("intake") / "evidence" / "intake-session.json"

@@ -33,7 +33,6 @@ def test_interactive_intake_scaffolds_config_and_writes_intake_bundle(tmp_path: 
     assert (base / "plan.json").exists()
     scope = ScopeContract.model_validate_json((base / "scope.json").read_text(encoding="utf-8"))
     assert scope.target_url == "https://staging.example.com/api/users"
-    assert scope.rules_summary["focus"] == ["/api/*"]
+    assert scope.rules_summary["focus"][0]["value"] == "/api/*"
     coverage = json.loads((base / "coverage_intake.json").read_text(encoding="utf-8"))
     assert coverage["status"] == "complete"
-
