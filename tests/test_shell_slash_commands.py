@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from pathlib import Path
 
 import pytest
 from rich.console import Console
@@ -106,3 +107,33 @@ def test_cli_defaults_to_shell_when_no_subcommand(monkeypatch: pytest.MonkeyPatc
 
     assert result.exit_code == 0
     assert state["called"] is True
+
+
+def test_shell_init_uses_plain_defaults_and_scaffolds_files(tmp_path: Path) -> None:
+    shell = AdversaShell(
+        handlers={
+            "help": lambda **kwargs: None,
+            "?": lambda **kwargs: None,
+            "run": lambda **kwargs: None,
+            "status": lambda **kwargs: None,
+            "resume": lambda **kwargs: None,
+            "cancel": lambda **kwargs: None,
+            "init": __import__("adversa.cli", fromlist=["init_command"]).init_command,
+            "config": lambda **kwargs: None,
+            "exit": lambda **kwargs: None,
+        },
+        console=Console(file=StringIO(), force_terminal=False, color_system=None),
+        prompt=lambda _: "",
+    )
+
+    cwd = Path.cwd()
+    try:
+        import os
+
+        os.chdir(tmp_path)
+        assert shell.handle_line("/init") is False
+    finally:
+        os.chdir(cwd)
+
+    assert (tmp_path / "adversa.toml").exists()
+    assert (tmp_path / "scope.template.json").exists()

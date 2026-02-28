@@ -49,16 +49,8 @@ def main(ctx: typer.Context) -> None:
 
 
 def init_command(
-    path: str = typer.Option(
-        "adversa.toml",
-        "--path",
-        help="Path where adversa.toml will be created.",
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help="Overwrite existing config/template files if they already exist.",
-    ),
+    path: str = "adversa.toml",
+    force: bool = False,
 ) -> None:
     target = Path(path)
     if target.exists() and not force:
@@ -98,36 +90,12 @@ def init(
 
 
 def run_command(
-    repo: str = typer.Option(
-        ...,
-        "--repo",
-        help="Path to authorized target repository. Must be under local repos/.",
-    ),
-    url: str = typer.Option(
-        ...,
-        "--url",
-        help="Authorized staging URL for this run (never production by default).",
-    ),
-    workspace: str = typer.Option(
-        "default",
-        "--workspace",
-        help="Workspace name used under runs/<workspace>/ for grouping run history.",
-    ),
-    config: str = typer.Option(
-        "adversa.toml",
-        "--config",
-        help="Path to adversa.toml configuration file.",
-    ),
-    i_acknowledge: bool = typer.Option(
-        False,
-        "--i-acknowledge",
-        help="Required explicit acknowledgement for authorized safe-mode testing.",
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help="Re-run phases even if schema-valid artifacts already exist.",
-    ),
+    repo: str,
+    url: str,
+    workspace: str = "default",
+    config: str = "adversa.toml",
+    i_acknowledge: bool = False,
+    force: bool = False,
 ) -> None:
     cfg = load_config(config)
     if not (i_acknowledge or cfg.safety.acknowledgement):
@@ -223,26 +191,10 @@ def _resolve_run_id(cfg_workspace_root: str, workspace: str, run_id: str | None)
 
 
 def resume_command(
-    workspace: str = typer.Option(
-        ...,
-        "--workspace",
-        help="Workspace name. Use the same workspace used in `adversa run`.",
-    ),
-    run_id: str | None = typer.Option(
-        None,
-        "--run-id",
-        help="Specific run ID to resume. If omitted, resumes latest run in the workspace.",
-    ),
-    url: str | None = typer.Option(
-        None,
-        "--url",
-        help="Optional target URL to verify against the original run before resuming.",
-    ),
-    force_target_mismatch: bool = typer.Option(
-        False,
-        "--force-target-mismatch",
-        help="Allow resume even when the provided --url differs from the original run target.",
-    ),
+    workspace: str,
+    run_id: str | None = None,
+    url: str | None = None,
+    force_target_mismatch: bool = False,
 ) -> None:
     cfg = load_config()
     run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
@@ -300,16 +252,8 @@ def resume(
 
 
 def status_command(
-    workspace: str = typer.Option(
-        ...,
-        "--workspace",
-        help="Workspace name. Use the same workspace used in `adversa run`.",
-    ),
-    run_id: str | None = typer.Option(
-        None,
-        "--run-id",
-        help="Specific run ID to inspect. If omitted, shows latest run in the workspace.",
-    ),
+    workspace: str,
+    run_id: str | None = None,
 ) -> None:
     cfg = load_config()
     run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
@@ -368,16 +312,8 @@ def status(
 
 
 def cancel_command(
-    workspace: str = typer.Option(
-        ...,
-        "--workspace",
-        help="Workspace name. Use the same workspace used in `adversa run`.",
-    ),
-    run_id: str | None = typer.Option(
-        None,
-        "--run-id",
-        help="Specific run ID to cancel. If omitted, cancels latest run in the workspace.",
-    ),
+    workspace: str,
+    run_id: str | None = None,
 ) -> None:
     cfg = load_config()
     run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
