@@ -67,6 +67,15 @@ Precedence:
 3. Environment variables
 4. Safe defaults
 
+## Interactive Shell
+Adversa also provides an interactive shell:
+
+```bash
+adversa shell
+```
+
+The shell supports slash commands such as `/run`, `/status`, `/resume`, `/cancel`, `/init`, and `/exit`, while preserving the same safety behavior as the standard CLI.
+
 ## Artifact Layout (Planned)
 Runs are expected under:
 
@@ -90,3 +99,5 @@ Runs are expected under:
 - PRD: [`prd.md`](/Users/chandrateja/Documents/Adversa-core/prd.md)
 - Linear issue export: [`adversa-prd-issues.md`](/Users/chandrateja/Documents/Adversa-core/adversa-prd-issues.md)
 - Agent operating contract: [`AGENTS.md`](/Users/chandrateja/Documents/Adversa-core/AGENTS.md)
+- Config reference: [`docs/adversa-toml.md`](/Users/chandrateja/Documents/Adversa-core/docs/adversa-toml.md)
+- Interactive shell: [`docs/interactive-shell.md`](/Users/chandrateja/Documents/Adversa-core/docs/interactive-shell.md)
