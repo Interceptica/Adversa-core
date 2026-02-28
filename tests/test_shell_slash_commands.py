@@ -137,8 +137,20 @@ def test_shell_uses_prompt_bar_style_message() -> None:
         console=Console(file=StringIO(), force_terminal=False, color_system=None),
         prompt=lambda _: "",
     )
+    shell._terminal_width = lambda: 72  # type: ignore[method-assign]
 
-    assert shell._prompt_message() == "adversa [/] | "
+    prompt_message = shell._prompt_message()
+    toolbar = shell._bottom_toolbar()
+    rendered_prompt = "".join(part[1] for part in prompt_message) if not isinstance(prompt_message, str) else prompt_message
+    rendered_toolbar = "".join(part[1] for part in toolbar) if not isinstance(toolbar, str) else str(toolbar)
+
+    assert "ADVERSA" in rendered_prompt
+    assert "[/]" in rendered_prompt
+    assert "slash commands enabled" in rendered_prompt
+    prompt_lines = rendered_prompt.splitlines()
+    assert len(prompt_lines) == 4
+    assert len(prompt_lines[0]) == 72
+    assert "safe-mode" in rendered_toolbar
 
 
 def test_shell_init_uses_plain_defaults_and_scaffolds_files(tmp_path: Path) -> None:

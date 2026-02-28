@@ -17,10 +17,12 @@ from adversa.ui.slash_commands import complete_slash_commands, help_lines, parse
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.formatted_text import FormattedText
 except Exception:  # pragma: no cover - fallback only
     PromptSession = None
     Completer = object  # type: ignore[assignment]
     Completion = None  # type: ignore[assignment]
+    FormattedText = None  # type: ignore[assignment]
 
 
 class SlashCommandCompleter(Completer):  # type: ignore[misc]
@@ -113,10 +115,48 @@ class AdversaShell:
         if PromptSession is None:
             return input
         session = PromptSession(completer=SlashCommandCompleter())
-        return session.prompt
+        return lambda _message: session.prompt(
+            self._prompt_message(),
+            bottom_toolbar=self._bottom_toolbar(),
+        )
 
-    def _prompt_message(self) -> str:
-        return "adversa [/] | "
+    def _prompt_message(self) -> str | FormattedText:
+        if FormattedText is None:
+            return "adversa [/] | "
+        width = self._prompt_box_width()
+        inner_width = width - 2
+        title = " ADVERSA shell "
+        context = " slash commands enabled "
+        top = f"┌{title:─<{inner_width}}┐\n"
+        middle = f"│{context:<{inner_width}}│\n"
+        bottom_prefix = "└─"
+        bottom_suffix = " "
+        bottom_fill = max(0, width - len(bottom_prefix) - len(bottom_suffix) - len("[/]"))
+        bottom = f"{bottom_prefix}{'─' * bottom_fill}{bottom_suffix}"
+        return FormattedText(
+            [
+                ("#5f5f5f", top),
+                ("#5f5f5f", middle),
+                ("#5f5f5f", "│ "),
+                ("#9a9a9a", f"{'type /help for commands':<{inner_width - 2}}"),
+                ("#5f5f5f", "│\n"),
+                ("#5f5f5f", bottom),
+                ("#ffffff bold", "[/]"),
+            ]
+        )
+
+    def _bottom_toolbar(self) -> str | FormattedText | None:
+        if FormattedText is None:
+            return " /help  safe-mode  repo guardrails active "
+        return FormattedText(
+            [
+                ("bg:#1a1a1a #bbbbbb", " /help "),
+                ("bg:#1a1a1a #777777", "  "),
+                ("bg:#1a1a1a #bbbbbb", " safe-mode "),
+                ("bg:#1a1a1a #777777", "  "),
+                ("bg:#1a1a1a #bbbbbb", " repo guardrails active "),
+            ]
+        )
 
     def _load_banner(self) -> Text | None:
         assets_dir = Path(__file__).resolve().parents[2] / "assets"
@@ -133,3 +173,6 @@ class AdversaShell:
 
     def _terminal_width(self) -> int:
         return shutil.get_terminal_size((100, 24)).columns
+
+    def _prompt_box_width(self) -> int:
+        return max(48, self._terminal_width())
