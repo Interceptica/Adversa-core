@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+from langchain.chat_models import init_chat_model
+
 from adversa.config.models import ProviderConfig
 from adversa.llm.errors import LLMErrorKind, LLMProviderError
 
@@ -22,6 +24,28 @@ class ProviderClient:
         self.resolve_api_key()
         if self.config.provider == "openai_compatible" and not self.config.base_url:
             raise LLMProviderError("OpenAI-compatible provider requires base_url", LLMErrorKind.FATAL)
+
+    def build_chat_model(self, *, temperature: float = 0) -> object:
+        api_key = self.resolve_api_key()
+        if self.config.provider == "anthropic":
+            return init_chat_model(
+                self.config.model,
+                api_key=api_key,
+                temperature=temperature,
+            )
+        if self.config.provider in {"openai_compatible", "router"}:
+            kwargs = {
+                "model": self.config.model,
+                "model_provider": "openai",
+                "api_key": api_key,
+                "temperature": temperature,
+            }
+            if self.config.base_url:
+                kwargs["base_url"] = self.config.base_url
+            elif self.config.provider == "openai_compatible":
+                raise LLMProviderError("OpenAI-compatible provider requires base_url", LLMErrorKind.FATAL)
+            return init_chat_model(**kwargs)
+        raise LLMProviderError(f"Unsupported provider: {self.config.provider}", LLMErrorKind.FATAL)
 
     def complete(self, prompt: str) -> str:
         self.health_check()

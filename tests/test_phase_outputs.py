@@ -4,11 +4,35 @@ import asyncio
 from pathlib import Path
 
 from adversa.artifacts.store import ArtifactStore
+from adversa.state.models import PreReconReport
 from adversa.state.models import PHASES
+from adversa.workflow_temporal import activities as workflow_activities
 from adversa.workflow_temporal.activities import run_phase_activity
 
 
-def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(tmp_path: Path) -> None:
+def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        workflow_activities,
+        "build_prerecon_report",
+        lambda **kwargs: PreReconReport(
+            target_url=kwargs["url"],
+            canonical_url=kwargs["url"],
+            host="example.com",
+            path="/",
+            repo_path=kwargs["repo_path"],
+            repo_root_validated=True,
+            repo_top_level_entries=["src"],
+            framework_signals=["nodejs_app"],
+            candidate_routes=["/"],
+            scope_inputs={},
+            plan_inputs={},
+            warnings=[],
+            remediation_hints=[],
+        ),
+    )
     expected_phase_files = {
         "intake": {"output.json", "summary.md", "coverage.json", "scope.json", "plan.json", "coverage_intake.json"},
         "prerecon": {"output.json", "summary.md", "coverage.json", "pre_recon.json"},

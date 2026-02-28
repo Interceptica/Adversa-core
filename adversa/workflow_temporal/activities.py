@@ -87,14 +87,22 @@ def _write_prerecon_artifacts(
     effective_config_path: str,
 ) -> list[Path]:
     phase_dir = store.phase_dir("prerecon")
-    report = build_prerecon_report(
-        workspace_root=workspace_root,
-        workspace=workspace,
-        run_id=run_id,
-        repo_path=repo_path,
-        url=url,
-        config_path=effective_config_path,
-    )
+    try:
+        report = build_prerecon_report(
+            workspace_root=workspace_root,
+            workspace=workspace,
+            run_id=run_id,
+            repo_path=repo_path,
+            url=url,
+            config_path=effective_config_path,
+        )
+    except Exception as exc:
+        classified = classify_provider_error(exc)
+        raise ApplicationError(
+            str(classified),
+            type=classified.kind.value,
+            non_retryable=classified.kind != LLMErrorKind.TRANSIENT,
+        ) from exc
     pre_recon_path = phase_dir / "pre_recon.json"
     pre_recon_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     if not validate_pre_recon(pre_recon_path):
@@ -187,16 +195,17 @@ async def run_phase_activity(
         )
         return {"phase": phase, "status": "skipped"}
 
+    agent_context = AdversaAgentContext(
+        phase=phase,
+        url=url,
+        repo_path=repo_path,
+        workspace=workspace,
+        run_id=run_id,
+        workspace_root=workspace_root,
+        config_path=effective_config_path,
+    )
     agent_execution = execute_phase_agent(
-        context=AdversaAgentContext(
-            phase=phase,
-            url=url,
-            repo_path=repo_path,
-            workspace=workspace,
-            run_id=run_id,
-            workspace_root=workspace_root,
-            config_path=effective_config_path,
-        ),
+        context=agent_context,
         selected_analyzers=rule_decision.selected_analyzers,
     )
     audit.log_tool_call(
@@ -240,6 +249,13 @@ async def run_phase_activity(
             f"Prerecon inspected host '{prerecon_payload['host']}' and inferred "
             f"{len(prerecon_payload['candidate_routes'])} candidate routes."
         )
+        phase_data["agent_runtime"] = {
+            "status": "completed",
+            "agent_name": "adversa-prerecon",
+            "middleware": agent_execution.middleware,
+            "executed": True,
+            "runner": "deepagents",
+        }
         evidence = [
             EvidenceRef(
                 id="prerecon-baseline",
