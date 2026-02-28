@@ -33,7 +33,10 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(tmp_path
 
         phase_dir = tmp_path / "ws" / "run1" / phase
         assert expected_phase_files[phase].issubset({path.name for path in phase_dir.iterdir() if path.is_file()})
-        assert (phase_dir / "evidence" / "stub.txt").exists()
+        if phase == "prerecon":
+            assert (phase_dir / "evidence" / "baseline.json").exists()
+        else:
+            assert (phase_dir / "evidence" / "stub.txt").exists()
 
 
 def test_rerun_skips_valid_phase_outputs_unless_force(tmp_path: Path) -> None:

@@ -164,6 +164,43 @@ class IntakeCoverage(BaseModel):
     )
 
 
+class PreReconReport(BaseModel):
+    target_url: str = Field(description="Authorized target URL evaluated during prerecon.")
+    canonical_url: str = Field(description="Normalized canonical URL used for prerecon baselining.")
+    host: str = Field(description="Normalized host extracted from the target URL.")
+    path: str = Field(description="Normalized path extracted from the target URL.")
+    repo_path: str = Field(description="Authorized repository path inspected during prerecon.")
+    repo_root_validated: bool = Field(description="Whether the repository path passed repo-root validation before inspection.")
+    repo_top_level_entries: list[str] = Field(
+        default_factory=list,
+        description="Deterministically sorted top-level files and directories discovered in the target repository.",
+    )
+    framework_signals: list[str] = Field(
+        default_factory=list,
+        description="Detected framework and runtime signals inferred from repository files.",
+    )
+    candidate_routes: list[str] = Field(
+        default_factory=list,
+        description="Potential application route paths inferred from repository and target inputs.",
+    )
+    scope_inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Key normalized intake scope inputs consumed by prerecon.",
+    )
+    plan_inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Relevant planner expectations consumed by prerecon.",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Operator-facing prerecon warnings and confidence gaps that downstream recon should preserve.",
+    )
+    remediation_hints: list[str] = Field(
+        default_factory=list,
+        description="Actionable next steps when prerecon inputs are incomplete or weak.",
+    )
+
+
 class ArtifactEntry(BaseModel):
     path: str = Field(description="Run-relative path to a generated artifact file.")
     sha256: str = Field(description="SHA-256 digest of the artifact contents for reproducibility checks.")
@@ -241,6 +278,7 @@ def schema_export(target_dir: Path) -> None:
         RunPlan,
         ScopeContract,
         IntakeCoverage,
+        PreReconReport,
         ArtifactIndex,
         ManifestState,
         WorkflowInput,

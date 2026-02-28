@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from adversa.state.models import ArtifactIndex, ManifestState, PhaseOutput, RunPlan, schema_export
+from adversa.state.models import ArtifactIndex, ManifestState, PhaseOutput, PreReconReport, RunPlan, schema_export
 
 
 def validate_phase_output(path: Path) -> bool:
@@ -28,6 +28,15 @@ def validate_run_plan(path: Path) -> bool:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         RunPlan.model_validate(payload)
+        return True
+    except Exception:
+        return False
+
+
+def validate_pre_recon(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        PreReconReport.model_validate(payload)
         return True
     except Exception:
         return False
