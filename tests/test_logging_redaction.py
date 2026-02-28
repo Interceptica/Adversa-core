@@ -49,6 +49,7 @@ def test_phase_activity_emits_audit_logs_per_phase(tmp_path: Path) -> None:
     agent_events = [json.loads(line) for line in (logs_dir / "agent_events.jsonl").read_text(encoding="utf-8").splitlines()]
 
     assert any(event["event_type"] == "phase_artifacts_written" for event in tool_events)
+    assert any(event["event_type"] == "agent_runtime_initialized" for event in tool_events)
     assert any(event["event_type"] == "phase_started" for event in agent_events)
     assert any(event["event_type"] == "phase_completed" for event in agent_events)
 

@@ -6,13 +6,16 @@ import json
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from adversa.agent_runtime.context import AdversaAgentContext
+from adversa.agent_runtime.executor import execute_phase_agent
 from adversa.artifacts.store import ArtifactStore
 from adversa.config.load import load_config
 from adversa.config.models import AdversaConfig
 from adversa.llm.errors import LLMErrorKind, LLMProviderError
 from adversa.llm.providers import ProviderClient
 from adversa.logging.audit import AuditLogger
-from adversa.security.rules import evaluate_rules
+from adversa.security.rule_compiler import compile_rules
+from adversa.security.rules import RuntimeTarget, evaluate_rules
 from adversa.state.models import EvidenceRef, ManifestState, PhaseOutput
 from adversa.state.schemas import validate_phase_output
 
@@ -69,7 +72,9 @@ async def run_phase_activity(
     store = ArtifactStore(Path(workspace_root), workspace, run_id)
     audit = AuditLogger(store.logs_dir)
     cfg = load_config(effective_config_path)
-    rule_decision = evaluate_rules(phase, cfg.rules)
+    runtime_target = RuntimeTarget.from_inputs(phase=phase, url=url, repo_path=repo_path)
+    compiled_rules = compile_rules(cfg)
+    rule_decision = evaluate_rules(runtime_target, compiled_rules)
     manifest = store.read_manifest() or ManifestState(
         workspace=workspace,
         run_id=run_id,
@@ -92,6 +97,7 @@ async def run_phase_activity(
             "workspace": workspace,
             "run_id": run_id,
             "phase": phase,
+            "runtime_target": runtime_target.__dict__,
             "selected_analyzers": rule_decision.selected_analyzers,
             "applied_rules": [rule.__dict__ for rule in rule_decision.applied_rules],
         }
@@ -122,6 +128,30 @@ async def run_phase_activity(
         )
         return {"phase": phase, "status": "skipped"}
 
+    agent_execution = execute_phase_agent(
+        context=AdversaAgentContext(
+            phase=phase,
+            url=url,
+            repo_path=repo_path,
+            workspace=workspace,
+            run_id=run_id,
+            workspace_root=workspace_root,
+            config_path=effective_config_path,
+        ),
+        selected_analyzers=rule_decision.selected_analyzers,
+    )
+    audit.log_tool_call(
+        {
+            "event_type": "agent_runtime_initialized",
+            "workspace": workspace,
+            "run_id": run_id,
+            "phase": phase,
+            "agent_name": agent_execution.agent_name,
+            "middleware": agent_execution.middleware,
+            "executed": agent_execution.executed,
+        }
+    )
+
     output = PhaseOutput(
         phase=phase,
         summary=f"Stub {phase} phase completed in safe mode.",
@@ -130,6 +160,12 @@ async def run_phase_activity(
             "safe_mode": True,
             "selected_analyzers": rule_decision.selected_analyzers,
             "applied_rules": [rule.__dict__ for rule in rule_decision.applied_rules],
+            "agent_runtime": {
+                "status": agent_execution.status,
+                "agent_name": agent_execution.agent_name,
+                "middleware": agent_execution.middleware,
+                "executed": agent_execution.executed,
+            },
         },
     )
 
