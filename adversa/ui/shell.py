@@ -48,7 +48,7 @@ class AdversaShell:
     def run(self) -> None:
         self.render_startup()
         while True:
-            raw = self._prompt(self._prompt_message()).strip()
+            raw = self.ask(self._prompt_message()).strip()
             if not raw:
                 continue
             should_exit = self.handle_line(raw)
@@ -68,8 +68,11 @@ class AdversaShell:
             return True
 
         missing = [name for name in command.required_args if name not in args]
+        if command.name == "run" and missing and "intake" in self.handlers:
+            self.handlers["intake"](**args)
+            return False
         for key in missing:
-            response = self._prompt(f"{key}: ").strip()
+            response = self.ask(f"{key}: ").strip()
             if response:
                 args[key] = response
 
@@ -81,6 +84,9 @@ class AdversaShell:
         with context:
             self.handlers[command.name](**args)
         return False
+
+    def ask(self, message: str | FormattedText) -> str:
+        return self._prompt(message)
 
     def render_startup(self) -> None:
         width = self._terminal_width()

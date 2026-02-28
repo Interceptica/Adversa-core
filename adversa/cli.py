@@ -10,6 +10,7 @@ import typer
 from adversa.artifacts.manifest import ensure_resume_url_matches
 from adversa.artifacts.store import ArtifactStore, latest_run_id
 from adversa.config.load import load_config, scaffold_default_config
+from adversa.intake.controller import interactive_intake
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root, ensure_safe_target_url
 from adversa.state.models import ManifestState
 from adversa.ui.shell import AdversaShell
@@ -27,11 +28,39 @@ app = typer.Typer(help="Adversa safe-by-default security CLI")
 
 
 def _build_shell() -> AdversaShell:
-    return AdversaShell(
+    shell: AdversaShell
+
+    def run_handler(**kwargs):  # type: ignore[no-untyped-def]
+        config = str(kwargs.get("config", "adversa.toml"))
+        if "repo" not in kwargs or "url" not in kwargs or not Path(config).exists():
+            return intake_command(
+                repo=kwargs.get("repo"),
+                url=kwargs.get("url"),
+                workspace=str(kwargs.get("workspace", "default")),
+                config=config,
+                i_acknowledge=bool(kwargs.get("i_acknowledge", False)),
+                force=bool(kwargs.get("force", False)),
+                prompt_fn=shell.ask,
+            )
+        return run_command(**kwargs)
+
+    def intake_handler(**kwargs):  # type: ignore[no-untyped-def]
+        return intake_command(
+            repo=kwargs.get("repo"),
+            url=kwargs.get("url"),
+            workspace=str(kwargs.get("workspace", "default")),
+            config=str(kwargs.get("config", "adversa.toml")),
+            i_acknowledge=bool(kwargs.get("i_acknowledge", False)),
+            force=bool(kwargs.get("force", False)),
+            prompt_fn=shell.ask,
+        )
+
+    shell = AdversaShell(
         handlers={
             "help": lambda **_: "",
             "?": lambda **_: "",
-            "run": run_command,
+            "run": run_handler,
+            "intake": intake_handler,
             "status": status_command,
             "resume": resume_command,
             "cancel": cancel_command,
@@ -40,6 +69,7 @@ def _build_shell() -> AdversaShell:
             "exit": lambda **_: None,
         }
     )
+    return shell
 
 
 @app.callback(invoke_without_command=True)
@@ -96,6 +126,8 @@ def run_command(
     config: str = "adversa.toml",
     i_acknowledge: bool = False,
     force: bool = False,
+    run_id: str | None = None,
+    workflow_id: str | None = None,
 ) -> None:
     cfg = load_config(config)
     if not (i_acknowledge or cfg.safety.acknowledgement):
@@ -107,17 +139,20 @@ def run_command(
     except ScopeViolationError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    run_id = uuid.uuid4().hex[:12]
-    workflow_id = f"adversa-{workspace}-{run_id}"
+    run_id = run_id or uuid.uuid4().hex[:12]
+    workflow_id = workflow_id or f"adversa-{workspace}-{run_id}"
 
     store = ArtifactStore(Path(cfg.run.workspace_root), workspace, run_id)
-    manifest = ManifestState(
+    manifest = store.read_manifest() or ManifestState(
         workspace=workspace,
         run_id=run_id,
         url=safe_url,
         repo_path=str(repo_path),
         workflow_id=workflow_id,
     )
+    manifest.workflow_id = workflow_id
+    manifest.url = safe_url
+    manifest.repo_path = str(repo_path)
     store.write_manifest(manifest)
 
     payload = {
@@ -136,6 +171,56 @@ def run_command(
 
     asyncio.run(_start())
     typer.echo(f"Started workflow {workflow_id}")
+
+
+def intake_command(
+    repo: str | None = None,
+    url: str | None = None,
+    workspace: str = "default",
+    config: str = "adversa.toml",
+    i_acknowledge: bool = False,
+    force: bool = False,
+    prompt_fn=None,  # type: ignore[no-untyped-def]
+) -> None:
+    asker = prompt_fn or (lambda message: input(str(message)))
+    result = interactive_intake(
+        prompt_fn=asker,
+        repo=repo,
+        url=url,
+        workspace=workspace,
+        config=config,
+        i_acknowledge=i_acknowledge,
+        force=force,
+    )
+    run_command(
+        repo=str(result["repo"]),
+        url=str(result["url"]),
+        workspace=str(result["workspace"]),
+        config=str(result["config"]),
+        i_acknowledge=bool(result["i_acknowledge"]),
+        force=bool(result["force"]),
+        run_id=str(result["run_id"]),
+        workflow_id=str(result["workflow_id"]),
+    )
+
+
+@app.command(name="intake")
+def intake(
+    repo: str | None = typer.Option(None, "--repo", help="Path to authorized target repository under repos/."),
+    url: str | None = typer.Option(None, "--url", help="Authorized staging URL for this run."),
+    workspace: str = typer.Option("default", "--workspace", help="Workspace name used under runs/<workspace>/."),
+    config: str = typer.Option("adversa.toml", "--config", help="Path to adversa.toml configuration file."),
+    i_acknowledge: bool = typer.Option(False, "--i-acknowledge", help="Explicit acknowledgement for authorized testing."),
+    force: bool = typer.Option(False, "--force", help="Re-run phases even if schema-valid artifacts already exist."),
+) -> None:
+    intake_command(
+        repo=repo,
+        url=url,
+        workspace=workspace,
+        config=config,
+        i_acknowledge=i_acknowledge,
+        force=force,
+    )
 
 
 @app.command(name="run")

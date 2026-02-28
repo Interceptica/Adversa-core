@@ -21,6 +21,11 @@ COMMANDS: dict[str, SlashCommand] = {
         required_args=("repo", "url"),
         optional_args=("workspace", "config", "i_acknowledge", "force"),
     ),
+    "intake": SlashCommand(
+        "intake",
+        "Start the guided intake conversation and then run.",
+        optional_args=("repo", "url", "workspace", "config", "i_acknowledge", "force"),
+    ),
     "status": SlashCommand(
         "status",
         "Inspect workflow status for a workspace/run.",
