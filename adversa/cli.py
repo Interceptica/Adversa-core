@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 
+from adversa.artifacts.manifest import ensure_resume_url_matches
 from adversa.artifacts.store import ArtifactStore, latest_run_id
 from adversa.config.load import load_config, scaffold_default_config
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root, ensure_safe_target_url
@@ -153,6 +154,16 @@ def resume(
         "--run-id",
         help="Specific run ID to resume. If omitted, resumes latest run in the workspace.",
     ),
+    url: str | None = typer.Option(
+        None,
+        "--url",
+        help="Optional target URL to verify against the original run before resuming.",
+    ),
+    force_target_mismatch: bool = typer.Option(
+        False,
+        "--force-target-mismatch",
+        help="Allow resume even when the provided --url differs from the original run target.",
+    ),
 ) -> None:
     cfg = load_config()
     run_id = _resolve_run_id(cfg.run.workspace_root, workspace, run_id)
@@ -160,6 +171,14 @@ def resume(
     manifest = store.read_manifest()
     if not manifest or not manifest.workflow_id:
         raise typer.BadParameter("No resumable manifest/workflow_id found.")
+    try:
+        ensure_resume_url_matches(
+            manifest,
+            url,
+            force_target_mismatch=force_target_mismatch,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     async def _resume() -> None:
         client = await get_client()
