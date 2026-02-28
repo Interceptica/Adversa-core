@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from adversa.artifacts.manifest import create_manifest
 from adversa.state.models import ArtifactEntry, ArtifactIndex, ManifestState, PhaseOutput
 from adversa.state.schemas import validate_phase_output
 
@@ -61,6 +62,23 @@ class ArtifactStore:
         if not self.manifest_path.exists():
             return None
         return ManifestState.model_validate_json(self.manifest_path.read_text(encoding="utf-8"))
+
+    def init_manifest(
+        self,
+        *,
+        url: str,
+        repo_path: str,
+        workflow_id: str | None = None,
+    ) -> ManifestState:
+        manifest = create_manifest(
+            workspace=self.base.parent.name,
+            run_id=self.base.name,
+            url=url,
+            repo_path=repo_path,
+            workflow_id=workflow_id,
+        )
+        self.write_manifest(manifest)
+        return manifest
 
     def write_manifest(self, manifest: ManifestState) -> None:
         self.manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
