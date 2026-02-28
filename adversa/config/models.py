@@ -3,14 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProviderConfig(BaseModel):
-    provider: Literal["anthropic", "openai_compatible"] = "anthropic"
+    provider: Literal["anthropic", "openai_compatible", "router"] = "anthropic"
     model: str = "claude-3-5-sonnet-latest"
     api_key_env: str = "ANTHROPIC_API_KEY"
     base_url: str | None = None
+
+    @model_validator(mode="after")
+    def validate_provider_settings(self) -> "ProviderConfig":
+        if self.provider == "openai_compatible" and not self.base_url:
+            raise ValueError("openai_compatible provider requires base_url")
+        return self
 
 
 class SafetyConfig(BaseModel):
