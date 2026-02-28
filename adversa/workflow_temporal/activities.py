@@ -7,10 +7,12 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from adversa.artifacts.store import ArtifactStore
+from adversa.config.load import load_config
 from adversa.config.models import AdversaConfig
 from adversa.llm.errors import LLMErrorKind, LLMProviderError
 from adversa.llm.providers import ProviderClient
 from adversa.logging.audit import AuditLogger
+from adversa.security.rules import evaluate_rules
 from adversa.state.models import EvidenceRef, ManifestState, PhaseOutput
 from adversa.state.schemas import validate_phase_output
 
@@ -62,9 +64,12 @@ async def run_phase_activity(
     url: str,
     phase: str,
     force: bool,
+    effective_config_path: str = "adversa.toml",
 ) -> dict:
     store = ArtifactStore(Path(workspace_root), workspace, run_id)
     audit = AuditLogger(store.logs_dir)
+    cfg = load_config(effective_config_path)
+    rule_decision = evaluate_rules(phase, cfg.rules)
     manifest = store.read_manifest() or ManifestState(
         workspace=workspace,
         run_id=run_id,
@@ -81,6 +86,30 @@ async def run_phase_activity(
             "url": url,
         }
     )
+    audit.log_tool_call(
+        {
+            "event_type": "rules_evaluated",
+            "workspace": workspace,
+            "run_id": run_id,
+            "phase": phase,
+            "selected_analyzers": rule_decision.selected_analyzers,
+            "applied_rules": [rule.__dict__ for rule in rule_decision.applied_rules],
+        }
+    )
+
+    if rule_decision.blocked_reason:
+        manifest.last_error = rule_decision.blocked_reason
+        store.write_manifest(manifest)
+        audit.log_agent_event(
+            {
+                "event_type": "phase_blocked_by_rule",
+                "workspace": workspace,
+                "run_id": run_id,
+                "phase": phase,
+                "reason": rule_decision.blocked_reason,
+            }
+        )
+        raise ApplicationError(rule_decision.blocked_reason, type="fatal", non_retryable=True)
 
     if store.should_skip_phase(phase, force=force):
         audit.log_agent_event(
@@ -97,7 +126,11 @@ async def run_phase_activity(
         phase=phase,
         summary=f"Stub {phase} phase completed in safe mode.",
         evidence=[EvidenceRef(id=f"{phase}-e1", path=f"{phase}/evidence/stub.txt", note="stub evidence")],
-        data={"safe_mode": True},
+        data={
+            "safe_mode": True,
+            "selected_analyzers": rule_decision.selected_analyzers,
+            "applied_rules": [rule.__dict__ for rule in rule_decision.applied_rules],
+        },
     )
 
     files = store.write_phase_artifacts(output)
