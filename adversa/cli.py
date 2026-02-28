@@ -9,7 +9,7 @@ import typer
 
 from adversa.artifacts.store import ArtifactStore, latest_run_id
 from adversa.config.load import load_config, scaffold_default_config
-from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
+from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root, ensure_safe_target_url
 from adversa.state.models import ManifestState
 from adversa.workflow_temporal.client import (
     check_provider_health,
@@ -97,6 +97,7 @@ def run(
 
     try:
         repo_path = ensure_repo_in_repos_root(Path(repo), Path(cfg.run.repos_root))
+        safe_url = ensure_safe_target_url(url, network_discovery_enabled=cfg.safety.network_discovery_enabled)
     except ScopeViolationError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -107,7 +108,7 @@ def run(
     manifest = ManifestState(
         workspace=workspace,
         run_id=run_id,
-        url=url,
+        url=safe_url,
         repo_path=str(repo_path),
         workflow_id=workflow_id,
     )
@@ -116,7 +117,7 @@ def run(
     payload = {
         "workspace": workspace,
         "repo_path": str(repo_path),
-        "url": url,
+        "url": safe_url,
         "effective_config_path": str(Path(config).resolve()),
         "safe_mode": cfg.safety.safe_mode,
         "run_id": run_id,
