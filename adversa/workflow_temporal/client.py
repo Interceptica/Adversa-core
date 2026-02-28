@@ -5,6 +5,7 @@ from datetime import timedelta
 from temporalio.client import Client
 
 from adversa.constants import DEFAULT_NAMESPACE, TASK_QUEUE
+from adversa.workflow_temporal.activities import provider_health_check
 from adversa.workflow_temporal.workflows import AdversaRunWorkflow
 
 
@@ -41,3 +42,11 @@ async def signal_cancel(client: Client, workflow_id: str) -> None:
 
 async def query_status(client: Client, workflow_id: str) -> dict:
     return await client.get_workflow_handle(workflow_id).query(AdversaRunWorkflow.status)
+
+
+async def check_provider_health(config: dict) -> dict:
+    try:
+        await provider_health_check(config)
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc)}
+    return {"ok": True, "reason": None}

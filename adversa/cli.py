@@ -12,6 +12,7 @@ from adversa.config.load import load_config, scaffold_default_config
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
 from adversa.state.models import ManifestState
 from adversa.workflow_temporal.client import (
+    check_provider_health,
     get_client,
     query_status,
     signal_cancel,
@@ -190,7 +191,12 @@ def status(
 
     async def _status() -> dict:
         client = await get_client()
-        return await query_status(client, manifest.workflow_id)
+        workflow_status = await query_status(client, manifest.workflow_id)
+        provider_status = await check_provider_health(cfg.model_dump())
+        return {
+            **workflow_status,
+            "provider_health": provider_status,
+        }
 
     s = asyncio.run(_status())
     index = store.read_index()
@@ -205,6 +211,7 @@ def status(
                 "completed_phases": s.get("completed_phases", []),
                 "waiting_for_config": s.get("waiting_for_config", False),
                 "waiting_reason": s.get("waiting_reason"),
+                "provider_health": s.get("provider_health"),
                 "paused": s.get("paused", False),
                 "canceled": s.get("canceled", False),
                 "artifact_count": len(index.files),
