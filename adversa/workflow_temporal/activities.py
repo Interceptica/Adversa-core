@@ -11,6 +11,7 @@ from adversa.agent_runtime.executor import execute_phase_agent
 from adversa.artifacts.store import ArtifactStore
 from adversa.config.load import load_config
 from adversa.config.models import AdversaConfig
+from adversa.intake.plan import build_run_plan
 from adversa.llm.errors import LLMErrorKind, LLMProviderError
 from adversa.llm.providers import ProviderClient
 from adversa.logging.audit import AuditLogger
@@ -20,10 +21,9 @@ from adversa.state.models import EvidenceRef, ManifestState, PhaseOutput
 from adversa.state.schemas import validate_phase_output
 
 
-PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, dict]] = {
+PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, object]] = {
     "intake": {
         "scope.json": {"authorized": True, "target_type": "staging", "url_source": "workflow_input"},
-        "plan.json": {"phases": ["intake", "prerecon", "recon", "vuln", "report"], "safe_mode": True},
         "coverage_intake.json": {"phase": "intake", "status": "stub"},
     },
     "prerecon": {
@@ -45,10 +45,27 @@ PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, dict]] = {
 }
 
 
-def _write_extra_phase_artifacts(store: ArtifactStore, phase: str) -> list[Path]:
+def _write_extra_phase_artifacts(
+    store: ArtifactStore,
+    phase: str,
+    *,
+    cfg: AdversaConfig,
+    url: str,
+    repo_path: str,
+    safe_mode: bool,
+) -> list[Path]:
     phase_dir = store.phase_dir(phase)
     written: list[Path] = []
-    for filename, payload in PHASE_EXTRA_ARTIFACTS.get(phase, {}).items():
+    payloads = dict(PHASE_EXTRA_ARTIFACTS.get(phase, {}))
+    if phase == "intake":
+        payloads["plan.json"] = build_run_plan(
+            url=url,
+            repo_path=repo_path,
+            config=cfg,
+            safe_mode=safe_mode,
+        ).model_dump(mode="json")
+
+    for filename, payload in payloads.items():
         path = phase_dir / filename
         if filename.endswith(".md"):
             path.write_text(str(payload), encoding="utf-8")
@@ -188,7 +205,14 @@ async def run_phase_activity(
 
     evidence_path = store.phase_dir(phase) / "evidence" / "stub.txt"
     evidence_path.write_text("evidence", encoding="utf-8")
-    extra_files = _write_extra_phase_artifacts(store, phase)
+    extra_files = _write_extra_phase_artifacts(
+        store,
+        phase,
+        cfg=cfg,
+        url=url,
+        repo_path=repo_path,
+        safe_mode=cfg.safety.safe_mode,
+    )
     store.append_index([*files.values(), evidence_path, *extra_files])
     audit.log_tool_call(
         {

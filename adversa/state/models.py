@@ -33,6 +33,65 @@ class PhaseOutput(BaseModel):
     )
 
 
+class PlanBudget(BaseModel):
+    time_budget_minutes: int = Field(description="Maximum wall-clock budget allocated to the run plan in minutes.")
+    token_budget: int = Field(description="Maximum model token budget allocated to the run plan.")
+    cost_budget_usd: float = Field(description="Maximum provider spend budget allocated to the run plan in USD.")
+    tool_call_budget: int = Field(description="Maximum number of tool invocations allowed across the run plan.")
+
+
+class PhaseExpectation(BaseModel):
+    phase: Literal["intake", "prerecon", "recon", "vuln", "report"] = Field(
+        description="Phase this execution expectation applies to."
+    )
+    selected_analyzers: list[str] = Field(
+        default_factory=list,
+        description="Deterministically selected analyzers planned for this phase.",
+    )
+    required_artifacts: list[str] = Field(
+        default_factory=list,
+        description="Schema-valid artifacts the phase is expected to emit.",
+    )
+    goals: list[str] = Field(
+        default_factory=list,
+        description="Operator-readable goals that explain what the phase should accomplish.",
+    )
+    constraints: list[str] = Field(
+        default_factory=list,
+        description="Constraints that the phase must respect during execution.",
+    )
+
+
+class PlanWarning(BaseModel):
+    code: str = Field(description="Stable machine-readable warning code.")
+    message: str = Field(description="Operator-readable warning emitted during planning.")
+
+
+class RunPlan(BaseModel):
+    phases: list[Literal["intake", "prerecon", "recon", "vuln", "report"]] = Field(
+        default_factory=list,
+        description="Ordered lifecycle phases that the run intends to execute.",
+    )
+    phase_expectations: list[PhaseExpectation] = Field(
+        default_factory=list,
+        description="Per-phase execution contract including analyzers, artifacts, goals, and constraints.",
+    )
+    budgets: PlanBudget = Field(description="Safe-mode execution budgets for time, tokens, cost, and tool usage.")
+    max_concurrent_pipelines: int = Field(
+        description="Maximum number of concurrent execution pipelines allowed by the plan."
+    )
+    constraints: list[str] = Field(
+        default_factory=list,
+        description="Global execution constraints that apply to the entire run.",
+    )
+    warnings: list[PlanWarning] = Field(
+        default_factory=list,
+        description="Actionable planner warnings about blocked phases, empty analyzer sets, or unsupported combinations.",
+    )
+    rationale: str = Field(description="Operator-readable explanation of how this plan was derived.")
+    safe_mode: bool = Field(description="Whether the plan is constrained to safe verification mode.")
+
+
 class ArtifactEntry(BaseModel):
     path: str = Field(description="Run-relative path to a generated artifact file.")
     sha256: str = Field(description="SHA-256 digest of the artifact contents for reproducibility checks.")
@@ -101,6 +160,6 @@ PHASES = ["intake", "prerecon", "recon", "vuln", "report"]
 
 def schema_export(target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
-    for model in [EvidenceRef, PhaseOutput, ArtifactIndex, ManifestState, WorkflowInput, WorkflowStatus]:
+    for model in [EvidenceRef, PhaseOutput, PlanBudget, PhaseExpectation, PlanWarning, RunPlan, ArtifactIndex, ManifestState, WorkflowInput, WorkflowStatus]:
         path = target_dir / f"{model.__name__}.json"
         path.write_text(json.dumps(model.model_json_schema(), indent=2, sort_keys=True), encoding="utf-8")
