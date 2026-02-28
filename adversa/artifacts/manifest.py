@@ -52,3 +52,19 @@ def mark_canceled(manifest: ManifestState) -> ManifestState:
     manifest.waiting_for_config = False
     manifest.waiting_reason = None
     return manifest
+
+
+def ensure_resume_url_matches(
+    manifest: ManifestState,
+    requested_url: str | None,
+    *,
+    force_target_mismatch: bool = False,
+) -> str:
+    if not requested_url:
+        return manifest.url
+    if requested_url == manifest.url or force_target_mismatch:
+        return requested_url
+    raise ValueError(
+        "Resume URL does not match the original run target. "
+        "Pass --force-target-mismatch to override intentionally."
+    )
