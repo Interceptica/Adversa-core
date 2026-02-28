@@ -74,7 +74,13 @@ Adversa also provides an interactive shell:
 adversa shell
 ```
 
-The shell supports slash commands such as `/run`, `/status`, `/resume`, `/cancel`, `/init`, and `/exit`, while preserving the same safety behavior as the standard CLI.
+For local repo execution, use:
+
+```bash
+uv run -m adversa
+```
+
+The shell supports slash commands such as `/run`, `/status`, `/resume`, `/cancel`, `/init`, and `/exit`, while preserving the same safety behavior as the standard CLI. It now launches with a branded Adversa banner, darker terminal framing, and a prompt-bar style shell UI.
 
 ## Artifact Layout (Planned)
 Runs are expected under:

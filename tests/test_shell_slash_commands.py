@@ -82,6 +82,28 @@ def test_shell_help_and_exit_behaviors_render_and_return() -> None:
     assert shell.handle_line("/exit") is True
 
 
+def test_shell_startup_renders_banner_and_guidance() -> None:
+    output = StringIO()
+    shell = AdversaShell(
+        handlers={
+            "run": lambda **kwargs: None,
+            "status": lambda **kwargs: None,
+            "resume": lambda **kwargs: None,
+            "cancel": lambda **kwargs: None,
+            "init": lambda **kwargs: None,
+        },
+        console=Console(file=output, force_terminal=False, color_system=None, width=120),
+        prompt=lambda _: "/exit",
+    )
+
+    shell.run()
+
+    rendered = output.getvalue()
+    assert "Safe-by-default whitebox security CLI" in rendered
+    assert "Type /help to explore commands" in rendered
+    assert "Exiting Adversa shell." in rendered
+
+
 def test_shell_unknown_command_fails_cleanly() -> None:
     shell = AdversaShell(
         handlers={},
@@ -107,6 +129,16 @@ def test_cli_defaults_to_shell_when_no_subcommand(monkeypatch: pytest.MonkeyPatc
 
     assert result.exit_code == 0
     assert state["called"] is True
+
+
+def test_shell_uses_prompt_bar_style_message() -> None:
+    shell = AdversaShell(
+        handlers={"run": lambda **kwargs: None},
+        console=Console(file=StringIO(), force_terminal=False, color_system=None),
+        prompt=lambda _: "",
+    )
+
+    assert shell._prompt_message() == "adversa [/] | "
 
 
 def test_shell_init_uses_plain_defaults_and_scaffolds_files(tmp_path: Path) -> None:

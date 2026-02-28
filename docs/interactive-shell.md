@@ -6,7 +6,16 @@ Adversa provides an interactive shell mode for operator-driven workflows:
 adversa shell
 ```
 
+For local development from the repo root, prefer:
+
+```bash
+uv run -m adversa
+```
+
 The shell uses the same underlying command handlers as the standard Typer CLI commands. Safety checks, acknowledgement requirements, repo path guardrails, and resume validation behavior remain unchanged.
+
+On startup, the shell renders a branded Adversa banner inside a darker terminal-style frame and uses a prompt-bar style input instead of the earlier plain `adversa> ` prompt.
+If a committed `assets/adversa_cli_banner.ansi` file exists, the shell prefers that richer terminal banner; otherwise it falls back to `assets/adversa_cli_banner.txt`.
 
 ## Slash Commands
 
@@ -62,7 +71,7 @@ If a slash command is missing required arguments, shell mode prompts for them in
 Example:
 
 ```text
-adversa> /run --workspace demo --i-acknowledge
+adversa [/] | /run --workspace demo --i-acknowledge
 repo: repos/demo
 url: https://staging.example.com
 ```

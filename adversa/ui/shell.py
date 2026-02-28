@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import nullcontext
+from pathlib import Path
+import shutil
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.box import ROUNDED
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.text import Text
 from rich.table import Table
 
 from adversa.ui.slash_commands import complete_slash_commands, help_lines, parse_slash_command
@@ -38,9 +44,9 @@ class AdversaShell:
         self._prompt = prompt or self._build_prompt()
 
     def run(self) -> None:
-        self.console.print("[bold]Adversa shell[/bold]. Type /help for commands.")
+        self.render_startup()
         while True:
-            raw = self._prompt("adversa> ").strip()
+            raw = self._prompt(self._prompt_message()).strip()
             if not raw:
                 continue
             should_exit = self.handle_line(raw)
@@ -74,10 +80,30 @@ class AdversaShell:
             self.handlers[command.name](**args)
         return False
 
+    def render_startup(self) -> None:
+        width = self._terminal_width()
+        banner = self._load_banner()
+        if banner and width >= 88:
+            header = banner
+        else:
+            header = Text(self._fallback_banner(), style="bold white")
+
+        subheader = Text("Safe-by-default whitebox security CLI", style="bold white")
+        guidance = Text("Type /help to explore commands. Explicit safety gates remain active.", style="dim")
+        self.console.print(
+            Panel(
+                Group(header, Rule(style="cyan"), subheader, guidance),
+                border_style="bright_black",
+                box=ROUNDED,
+                style="on #111111",
+                padding=(1, 2),
+            )
+        )
+
     def render_help(self) -> None:
-        table = Table(title="Slash Commands")
-        table.add_column("Command", style="cyan")
-        table.add_column("Description")
+        table = Table(title="Slash Commands", border_style="bright_black")
+        table.add_column("Command", style="bold white")
+        table.add_column("Description", style="white")
         for line in help_lines():
             command, description = line.split(maxsplit=1)
             table.add_row(command, description)
@@ -88,3 +114,22 @@ class AdversaShell:
             return input
         session = PromptSession(completer=SlashCommandCompleter())
         return session.prompt
+
+    def _prompt_message(self) -> str:
+        return "adversa [/] | "
+
+    def _load_banner(self) -> Text | None:
+        assets_dir = Path(__file__).resolve().parents[2] / "assets"
+        ansi_path = assets_dir / "adversa_cli_banner.ansi"
+        text_path = assets_dir / "adversa_cli_banner.txt"
+        if ansi_path.exists():
+            return Text.from_ansi(ansi_path.read_text(encoding="utf-8"), style="white")
+        if text_path.exists():
+            return Text(text_path.read_text(encoding="utf-8"), style="white")
+        return None
+
+    def _fallback_banner(self) -> str:
+        return "ADVERSA"
+
+    def _terminal_width(self) -> int:
+        return shutil.get_terminal_size((100, 24)).columns
