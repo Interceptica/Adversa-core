@@ -98,9 +98,19 @@ class ScopeContract(BaseModel):
     workspace: str = Field(description="Workspace name used to group this run.")
     authorized: bool = Field(description="Whether the operator explicitly acknowledged authorization.")
     safe_mode: bool = Field(description="Whether execution remains constrained to safe mode.")
+    source_precedence: list[str] = Field(
+        default_factory=list,
+        description="Ordered sources used to derive this scope contract.",
+    )
+    normalized_host: str = Field(description="Normalized host extracted from the authorized target URL.")
+    normalized_path: str = Field(description="Normalized path extracted from the authorized target URL.")
     allowed_hosts: list[str] = Field(
         default_factory=list,
         description="Hosts explicitly allowed for this run.",
+    )
+    allowed_subdomains: list[str] = Field(
+        default_factory=list,
+        description="Subdomains explicitly allowed for this run.",
     )
     allowed_paths: list[str] = Field(
         default_factory=list,
@@ -110,17 +120,30 @@ class ScopeContract(BaseModel):
         default_factory=list,
         description="Operator-provided out-of-scope targets or exclusions.",
     )
+    capability_constraints: list[str] = Field(
+        default_factory=list,
+        description="Execution capability constraints derived from safety mode and config.",
+    )
+    repo_root_validated: bool = Field(description="Whether the repository path passed repo-root enforcement checks.")
+    evidence_expectations: list[str] = Field(
+        default_factory=list,
+        description="Evidence requirements downstream phases should preserve.",
+    )
     notes: list[str] = Field(
         default_factory=list,
         description="Operator-provided notes that should accompany the scope contract.",
     )
-    rules_summary: dict[str, list[str]] = Field(
+    rules_summary: dict[str, list[dict[str, str]]] = Field(
         default_factory=dict,
-        description="Summary of focus/avoid rules resolved from intake or config.",
+        description="Summary of focus/avoid rules resolved from intake or config with type/value/source metadata.",
     )
     confidence_gaps: list[str] = Field(
         default_factory=list,
         description="Scope ambiguities that later phases should preserve as warnings.",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Structured normalization warnings that should remain visible to operators and later phases.",
     )
 
 
