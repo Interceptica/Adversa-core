@@ -5,9 +5,20 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 
 from adversa.state.models import PHASES, WorkflowInput, WorkflowStatus
 from adversa.workflow_temporal.activities import run_phase_activity
+
+
+PHASE_ACTIVITY_TIMEOUT = timedelta(minutes=10)
+PHASE_ACTIVITY_RETRY_POLICY = RetryPolicy(
+    initial_interval=timedelta(seconds=2),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(seconds=30),
+    maximum_attempts=3,
+    non_retryable_error_types=["config_required", "fatal"],
+)
 
 
 @dataclass
@@ -48,8 +59,10 @@ class WorkflowEngine:
         self.status.last_error = None
 
 
-def is_config_required_error(message: str) -> bool:
-    lowered = message.lower()
+def is_config_required_error(exc: Exception) -> bool:
+    if isinstance(exc, ApplicationError):
+        return exc.type == "config_required"
+    lowered = str(exc).lower()
     return "config_required" in lowered or "missing env var" in lowered or "401" in lowered
 
 
@@ -106,20 +119,15 @@ class AdversaRunWorkflow:
                         inp.url,
                         phase,
                         inp.force,
-                        start_to_close_timeout=timedelta(minutes=10),
-                        retry_policy=RetryPolicy(
-                            initial_interval=timedelta(seconds=2),
-                            backoff_coefficient=2.0,
-                            maximum_interval=timedelta(seconds=30),
-                            maximum_attempts=3,
-                        ),
+                        start_to_close_timeout=PHASE_ACTIVITY_TIMEOUT,
+                        retry_policy=PHASE_ACTIVITY_RETRY_POLICY,
                     )
                     if result.get("status") in {"completed", "skipped"}:
                         self.engine.record_completion(phase)
                     phase_done = True
                 except Exception as exc:
                     message = str(exc)
-                    if is_config_required_error(message):
+                    if is_config_required_error(exc):
                         self.engine.mark_waiting("LLM provider config required")
                         await workflow.wait_condition(
                             lambda: self._update_config or self.engine.status.canceled,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from adversa.artifacts.store import ArtifactStore
 from adversa.config.models import AdversaConfig
@@ -68,3 +69,13 @@ def classify_provider_error(exc: Exception) -> LLMProviderError:
     if any(k in msg for k in ["429", "timeout", "temporarily unavailable"]):
         return LLMProviderError(str(exc), LLMErrorKind.TRANSIENT)
     return LLMProviderError(str(exc), LLMErrorKind.FATAL)
+
+
+def to_activity_error(exc: Exception) -> ApplicationError:
+    provider_error = classify_provider_error(exc)
+    non_retryable = provider_error.kind in {LLMErrorKind.CONFIG_REQUIRED, LLMErrorKind.FATAL}
+    return ApplicationError(
+        str(provider_error),
+        type=provider_error.kind.value,
+        non_retryable=non_retryable,
+    )
