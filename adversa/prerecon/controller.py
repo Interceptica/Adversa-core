@@ -19,12 +19,14 @@ from adversa.llm.providers import ProviderClient
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
 from adversa.state.models import (
     AuthSignal,
+    DataFlowPattern,
     ExternalIntegration,
     FrameworkSignal,
     PreReconReport,
     RouteSurface,
     SchemaFile,
     SecurityConfigSignal,
+    VulnerabilitySink,
 )
 
 
@@ -82,7 +84,7 @@ def build_prerecon_report(
                 context, allowed_repo_virtual_prefix=inputs.repo_virtual_path
             ),
         ],
-        subagents=[_repo_research_subagent()],
+        subagents=_prerecon_subagents(),
         response_format=PreReconReport,
         backend=FilesystemBackend(root_dir=PROJECT_ROOT, virtual_mode=True),
         name="adversa-prerecon",
@@ -198,17 +200,195 @@ def _load_intake_inputs(
     return scope_inputs, plan_inputs
 
 
-def _repo_research_subagent() -> dict[str, Any]:
-    return {
-        "name": "repo-researcher",
-        "description": "Use this subagent for detailed repository inspection, route discovery, and architecture mapping inside the authorized repo only.",
-        "prompt": (
-            "You are a specialist prerecon repository analyst. Read only the authorized repository path given in the task.\n"
-            "Focus on high-signal repository evidence for routes, auth/session behavior, schema files, external integrations, and security middleware.\n"
-            "Return only evidence-backed findings. If evidence is weak, note the uncertainty instead of inferring.\n"
-            "Prefer targeted glob, grep, and file reads over broad dumping.\n"
-        ),
-    }
+def _prerecon_subagents() -> list[dict[str, Any]]:
+    """
+    Returns specialized subagents for comprehensive prerecon analysis aligned with Shannon's architecture.
+    
+    Phase 1: Architecture & Entry Points (parallel execution)
+    Phase 2: Security & Vulnerability Analysis (uses Phase 1 results)
+    """
+    return [
+        {
+            "name": "architecture-scanner",
+            "description": "Specialized subagent for mapping project structure, technology stack, frameworks, and security-relevant configurations.",
+            "prompt": (
+                "You are an architecture analysis specialist for security-focused code reconnaissance.\n"
+                "Your mission: Map the codebase structure, identify frameworks/runtimes, locate entry points, and find security configurations.\n\n"
+                "Focus areas:\n"
+                "1. Project structure and organization patterns\n"
+                "2. Framework detection (Express, FastAPI, Django, Rails, Next.js, Gin, etc.)\n"
+                "3. Entry points (main files, server bootstrapping, route registration)\n"
+                "4. Configuration files (.env, config.*, settings.*, docker-compose.yml)\n"
+                "5. Security middleware (CORS, CSP, rate limiting, auth middleware)\n"
+                "6. Dependency analysis for security-relevant packages\n\n"
+                "Evidence quality:\n"
+                "- HIGH: Direct code evidence (import statements, explicit framework usage)\n"
+                "- MEDIUM: Configuration patterns and naming conventions\n"
+                "- LOW: Dependency-only inferences\n\n"
+                "Scope discipline:\n"
+                "- IN-SCOPE: Network-reachable code (routes, APIs, webhooks, handlers)\n"
+                "- OUT-OF-SCOPE: CLI tools, build scripts, test harnesses, dev utilities\n\n"
+                "Return concrete file paths, line numbers, and code snippets for all findings.\n"
+                "If evidence is weak, explicitly note the uncertainty.\n"
+            ),
+        },
+        {
+            "name": "entry-point-mapper",
+            "description": "Specialized subagent for discovering and cataloging all application routes, APIs, endpoints, and webhook handlers.",
+            "prompt": (
+                "You are an entry point discovery specialist for security reconnaissance.\n"
+                "Your mission: Find every network-reachable entry point into the application.\n\n"
+                "Discovery targets:\n"
+                "1. HTTP routes (GET, POST, PUT, DELETE, PATCH, OPTIONS)\n"
+                "2. API endpoints (REST, GraphQL, gRPC, WebSocket)\n"
+                "3. Webhook receivers and callback handlers\n"
+                "4. File upload/download handlers\n"
+                "5. Admin/management interfaces\n"
+                "6. Health check and status endpoints\n"
+                "7. Authentication endpoints (login, logout, OAuth callbacks, token refresh)\n"
+                "8. Static file serving and public assets\n\n"
+                "For each entry point, document:\n"
+                "- Full route path and HTTP method(s)\n"
+                "- Kind (page, api, graphql, websocket, admin, health, auth, upload, webhook)\n"
+                "- File location with line numbers\n"
+                "- Authentication requirements (public vs protected)\n"
+                "- Input handling (query params, body, headers, files)\n"
+                "- Evidence level (HIGH for explicit routes, MEDIUM for framework conventions, LOW for assumptions)\n"
+                "- Scope classification (in_scope for network-reachable, out_of_scope for CLI/local-only)\n\n"
+                "Search patterns for common frameworks:\n"
+                "- Express: app.get/post/put/delete, router.METHOD\n"
+                "- FastAPI: @app.get/post, @router.get/post\n"
+                "- Django: path(), re_path(), urls.py patterns\n"
+                "- Rails: routes.rb, resources, get/post/put/delete\n"
+                "- Next.js: pages/*, app/*, pages/api/*\n"
+                "- Gin: router.GET/POST, engine.Handle\n\n"
+                "Return only evidence-backed routes. Do not fabricate or infer routes without code evidence.\n"
+            ),
+        },
+        {
+            "name": "sink-hunter",
+            "description": "Specialized subagent for identifying XSS, injection, SSRF, deserialization, and path traversal vulnerability sinks.",
+            "prompt": (
+                "You are a vulnerability sink discovery specialist for security analysis.\n"
+                "Your mission: Identify dangerous code patterns where user input could lead to security vulnerabilities.\n\n"
+                "Critical sink categories to hunt:\n\n"
+                "1. XSS (Cross-Site Scripting) Sinks:\n"
+                "   - DOM manipulation: innerHTML, outerHTML, document.write, insertAdjacentHTML\n"
+                "   - Unsafe template rendering: dangerouslySetInnerHTML, v-html, [innerHTML]\n"
+                "   - Direct HTML construction from user input\n"
+                "   - JavaScript contexts: eval() with user data, setTimeout/setInterval with strings\n\n"
+                "2. SQL Injection Sinks:\n"
+                "   - Raw SQL with string concatenation or f-strings\n"
+                "   - ORM bypasses: .raw(), .execute() with unparameterized queries\n"
+                "   - Dynamic table/column names from user input\n"
+                "   - Stored procedures with unvalidated parameters\n\n"
+                "3. Command Injection Sinks:\n"
+                "   - System calls: exec, spawn, shell_exec, system, popen, subprocess.run with shell=True\n"
+                "   - Shell commands with user-controlled arguments\n"
+                "   - Template injection in command strings\n\n"
+                "4. SSRF (Server-Side Request Forgery) Sinks:\n"
+                "   - HTTP client calls with user-controlled URLs\n"
+                "   - URL fetchers, link preview generators\n"
+                "   - Webhook dispatchers\n"
+                "   - Image/file loading from URLs\n"
+                "   - XML/YAML parsers with external entity resolution enabled\n\n"
+                "5. Deserialization Sinks:\n"
+                "   - Unsafe deserialization: pickle.loads, yaml.load (non-safe), unserialize\n"
+                "   - JSON parsing with reviver/custom classes\n"
+                "   - XML deserialization with type handling\n\n"
+                "6. Path Traversal Sinks:\n"
+                "   - File operations with user paths: open(), readFile(), fs.read()\n"
+                "   - Directory traversal in file downloads\n"
+                "   - Static file serving without path normalization\n\n"
+                "For each sink, document:\n"
+                "- Sink type (xss, sql_injection, command_injection, ssrf, deserialization, path_traversal)\n"
+                "- Exact file location and line number\n"
+                "- Code context (5-10 lines showing the dangerous pattern)\n"
+                "- Potential input sources (route params, query strings, request body, headers)\n"
+                "- Mitigation status (whether sanitization/validation is present)\n"
+                "- Evidence level (HIGH for clear dangerous usage, MEDIUM for potentially mitigated, LOW for uncertain)\n"
+                "- Scope classification (in_scope if network-reachable, out_of_scope if CLI/test only)\n\n"
+                "Search strategy:\n"
+                "1. Use targeted grep patterns for dangerous functions\n"
+                "2. Trace user input flow from routes to sinks\n"
+                "3. Check for presence of sanitization/validation middleware\n"
+                "4. Prioritize in_scope (network-reachable) sinks over out_of_scope\n\n"
+                "Return only verified sinks with strong evidence. Do not fabricate vulnerabilities.\n"
+            ),
+        },
+        {
+            "name": "data-auditor",
+            "description": "Specialized subagent for tracing sensitive data flows through the application for security and compliance analysis.",
+            "prompt": (
+                "You are a data security and compliance specialist for application analysis.\n"
+                "Your mission: Trace how sensitive data moves through the codebase for security and regulatory compliance.\n\n"
+                "Sensitive data categories to trace:\n\n"
+                "1. Credentials & Secrets:\n"
+                "   - Passwords, password hashes, salts\n"
+                "   - API keys, access tokens, refresh tokens\n"
+                "   - Session identifiers, JWT secrets\n"
+                "   - Encryption keys, private keys, certificates\n"
+                "   - Database credentials, service account keys\n"
+                "   - OAuth tokens, API secrets\n\n"
+                "2. Personal Identifiable Information (PII):\n"
+                "   - Email addresses, phone numbers\n"
+                "   - Full names, addresses, birthdates\n"
+                "   - Social security numbers, national IDs\n"
+                "   - IP addresses, geolocation data\n"
+                "   - User preferences, behavioral data\n"
+                "   - Profile photos, biometric data\n\n"
+                "3. Financial Data:\n"
+                "   - Credit card numbers, CVV codes, expiry dates\n"
+                "   - Bank account numbers, routing numbers\n"
+                "   - Payment tokens, transaction history\n"
+                "   - Billing addresses, invoice data\n\n"
+                "4. Health Records (if applicable):\n"
+                "   - Medical records, diagnoses, prescriptions\n"
+                "   - Health insurance information\n"
+                "   - Biometric health data (fitness, vitals)\n\n"
+                "For each data type, trace the complete flow:\n\n"
+                "1. Sources (where data enters the system):\n"
+                "   - Form inputs, API request bodies\n"
+                "   - OAuth providers, third-party integrations\n"
+                "   - File uploads, imports\n"
+                "   - Webhooks, external APIs\n\n"
+                "2. Sinks (where data is consumed/stored):\n"
+                "   - Database tables and columns\n"
+                "   - Cache stores (Redis, Memcached)\n"
+                "   - Session storage\n"
+                "   - File system locations\n"
+                "   - Third-party services (analytics, CRMs, payment processors)\n"
+                "   - Logs (warn if sensitive data is logged)\n\n"
+                "3. Encryption status:\n"
+                "   - encrypted: Data protected in transit (TLS) and at rest (database encryption)\n"
+                "   - plaintext: No encryption detected\n"
+                "   - mixed: Some protections but not comprehensive\n"
+                "   - unknown: Cannot determine from code inspection\n\n"
+                "4. Compliance concerns:\n"
+                "   - GDPR (EU data protection): right to deletion, consent, data portability\n"
+                "   - HIPAA (US health data): PHI handling, encryption, audit logs\n"
+                "   - PCI-DSS (payment cards): tokenization, encryption, scope reduction\n"
+                "   - SOX (financial reporting): data integrity, access controls\n"
+                "   - CCPA (California privacy): data disclosure, opt-out\n\n"
+                "Document each pattern:\n"
+                "- Data type (credentials, pii, financial, health_records)\n"
+                "- Sources (file locations where data is collected)\n"
+                "- Sinks (file locations where data is stored/transmitted)\n"
+                "- Encryption status (encrypted, plaintext, mixed, unknown)\n"
+                "- Storage locations (database, file, cache, session, third_party)\n"
+                "- Compliance concerns (gdpr, hipaa, pci_dss, sox, ccpa)\n"
+                "- Evidence level (HIGH for explicit handling, MEDIUM for inferred, LOW for assumed)\n\n"
+                "Search strategy:\n"
+                "1. Identify database schema files for sensitive columns\n"
+                "2. Trace form fields and API endpoints collecting sensitive data\n"
+                "3. Check for encryption libraries usage\n"
+                "4. Look for password hashing (bcrypt, argon2, scrypt)\n"
+                "5. Check for PCI-compliant tokenization for payment data\n"
+                "6. Verify GDPR compliance features (data export, deletion)\n\n"
+                "Return only evidence-backed data flows. Flag compliance gaps as warnings.\n"
+            ),
+        },
+    ]
 
 
 def _build_prerecon_request(inputs: PrereconInputs) -> str:
@@ -225,11 +405,15 @@ def _build_prerecon_request(inputs: PrereconInputs) -> str:
         "\nPlanner prerecon inputs:\n"
         f"{json.dumps(inputs.plan_inputs, indent=2, sort_keys=True)}\n"
         "\nRequirements:\n"
-        "- Use the repo-researcher subagent when repository inspection is non-trivial.\n"
+        "- Use specialized subagents for comprehensive analysis:\n"
+        "  * architecture-scanner: Framework detection, entry points, configuration analysis\n"
+        "  * entry-point-mapper: Complete route and API endpoint discovery\n"
+        "  * sink-hunter: Vulnerability sink identification (XSS, injection, SSRF, deserialization, path traversal)\n"
+        "  * data-auditor: Sensitive data flow tracing and compliance analysis (PII, credentials, financial data)\n"
         "- Use deep filesystem tools only under the authorized repo_virtual_path.\n"
-        "- Do not fabricate frameworks, routes, or auth flows.\n"
-        "- Prefer concrete file-backed evidence.\n"
-        "- Produce a complete structured PreReconReport.\n"
+        "- Do not fabricate frameworks, routes, auth flows, or vulnerability findings.\n"
+        "- Prefer concrete file-backed evidence with file paths and line numbers.\n"
+        "- Produce a complete structured PreReconReport including vulnerability_sinks and data_flow_patterns.\n"
         "- If something is unknown, leave it out of lists and explain it in warnings/remediation_hints.\n"
     )
 
@@ -250,6 +434,8 @@ def _normalize_report(report: PreReconReport, inputs: PrereconInputs) -> PreReco
             "schema_files": _dedupe_schema_files(report.schema_files),
             "external_integrations": _dedupe_external_integrations(report.external_integrations),
             "security_config": _dedupe_security_config(report.security_config),
+            "vulnerability_sinks": _dedupe_vulnerability_sinks(report.vulnerability_sinks),
+            "data_flow_patterns": _dedupe_data_flow_patterns(report.data_flow_patterns),
             "scope_inputs": inputs.scope_inputs,
             "plan_inputs": inputs.plan_inputs,
             "warnings": sorted(set(report.warnings)),
@@ -316,3 +502,25 @@ def _dedupe_security_config(items: list[SecurityConfigSignal]) -> list[SecurityC
         for item in items
     }
     return sorted(deduped.values(), key=lambda item: (item.signal, item.location, item.evidence_level))[:30]
+
+
+def _dedupe_vulnerability_sinks(items: list[VulnerabilitySink]) -> list[VulnerabilitySink]:
+    deduped = {
+        (item.sink_type, item.location, item.scope_classification, item.evidence_level): item
+        for item in items
+    }
+    return sorted(
+        deduped.values(),
+        key=lambda item: (item.sink_type, item.scope_classification, item.evidence_level, item.location),
+    )[:50]
+
+
+def _dedupe_data_flow_patterns(items: list[DataFlowPattern]) -> list[DataFlowPattern]:
+    deduped = {
+        (item.data_type, tuple(sorted(item.sources)), tuple(sorted(item.sinks)), item.encryption_status): item
+        for item in items
+    }
+    return sorted(
+        deduped.values(),
+        key=lambda item: (item.data_type, item.encryption_status, item.evidence_level),
+    )[:30]

@@ -119,6 +119,8 @@ def _write_prerecon_artifacts(
                 "schema_files": [item.model_dump(mode="json") for item in report.schema_files],
                 "external_integrations": [item.model_dump(mode="json") for item in report.external_integrations],
                 "security_config": [item.model_dump(mode="json") for item in report.security_config],
+                "vulnerability_sinks": [item.model_dump(mode="json") for item in report.vulnerability_sinks],
+                "data_flow_patterns": [item.model_dump(mode="json") for item in report.data_flow_patterns],
                 "scope_inputs": report.scope_inputs,
                 "plan_inputs": report.plan_inputs,
             },
@@ -274,6 +276,8 @@ async def run_phase_activity(
             "schema_files": prerecon_payload["schema_files"],
             "external_integrations": prerecon_payload["external_integrations"],
             "security_config": prerecon_payload["security_config"],
+            "vulnerability_sinks": prerecon_payload["vulnerability_sinks"],
+            "data_flow_patterns": prerecon_payload["data_flow_patterns"],
             "warnings": prerecon_payload["warnings"],
         }
 
@@ -312,6 +316,8 @@ async def run_phase_activity(
                     "candidate_route_count": len(prerecon_payload["candidate_routes"]),
                     "auth_signal_count": len(prerecon_payload["auth_signals"]),
                     "schema_file_count": len(prerecon_payload["schema_files"]),
+                    "vulnerability_sink_count": len(prerecon_payload["vulnerability_sinks"]),
+                    "data_flow_pattern_count": len(prerecon_payload["data_flow_patterns"]),
                     "warnings": prerecon_payload["warnings"],
                 },
                 indent=2,

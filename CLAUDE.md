@@ -4,9 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Common Commands
 
+### Using mise (Recommended)
+
 ```bash
-# Install dependencies
-uv sync
+# Install mise: https://mise.jdx.dev/getting-started.html
+curl https://mise.run | sh
+
+# Install dependencies (Python, uv, and project packages)
+mise install
+mise run install
 
 # Run the CLI
 adversa --help
@@ -28,15 +34,35 @@ adversa resume --workspace <name> [--run-id <id>]
 adversa cancel --workspace <name> [--run-id <id>]
 
 # Run tests
-pytest
+mise run test
 
 # Run a specific test
 pytest tests/test_module.py::test_function
 
 # Linting
-ruff check .
+mise run lint
+mise run lint-fix  # With auto-fix
 
 # Run Temporal worker (separate process for workflow execution)
+mise run worker
+
+# See all available tasks
+mise tasks
+```
+
+### Traditional Commands (without mise)
+
+```bash
+# Install dependencies
+uv sync
+
+# Run tests
+pytest
+
+# Linting
+ruff check .
+
+# Run Temporal worker
 python -m adversa.workflow_temporal.worker
 ```
 
@@ -82,7 +108,7 @@ Adversa is a **Temporal-based durable workflow CLI** for authorized security tes
    - Repository path validation via `security/scope.py`
 
 2. **Temporal Workflow** (`workflow_temporal/workflows.py`)
-   - Durable state machine sequencing through 5 phases: `intake` → `prerecon` → `recon` → `vuln` → `report`
+   - Durable state machine sequencing through phases: `intake` → `prerecon` → (`netdisc` - planned) → `recon` → `vuln` → `report`
    - Signal handlers: `pause()`, `resume()`, `cancel()`, `update_config()`
    - Config error recovery: enters "waiting for config" state (up to 24 hours) for missing API keys / 401 errors
    - State tracking: current phase, completed phases, paused/canceled status, last error
@@ -179,7 +205,17 @@ Signal definitions in `workflow_temporal/signals.py`.
 Each phase must emit schema-valid artifacts:
 
 - **Intake**: `scope.json`, `plan.json`, `coverage_intake.json`
-- **Pre-Recon**: `pre_recon.json`, coverage + evidence pack
+- **Pre-Recon**: `pre_recon.json`, `coverage_prerecon.json`, evidence pack with:
+  - Framework signals, candidate routes, auth signals
+  - Vulnerability sinks (XSS, injection, SSRF, deserialization)
+  - Data flow patterns (sensitive data tracking)
+  - Schema files (OpenAPI, GraphQL)
+  - External integrations, security config
+- **Network Discovery** (planned): `network_discovery.json`, coverage + evidence pack with:
+  - Subdomain enumeration (subfinder)
+  - Port/service discovery (nmap - safe mode only)
+  - TLS/SSL configuration analysis
+  - DNS records and zone data
 - **Recon**: `system_map.json`, `attack_surface.json`, auth/authz/data-flow models
 - **Vulnerability**: `findings.json`, `risk_register.json`, analyzer evidence
 - **Reporting**: `report.md`, `exec_summary.md`, `retest_plan.json`, bundle index/metadata
@@ -194,3 +230,4 @@ Each phase must emit schema-valid artifacts:
 - **Testing**: pytest
 - **Linting/Formatting**: ruff
 - **Package Manager**: uv
+- **Environment Management**: mise-en-place (optional, recommended)

@@ -220,6 +220,56 @@ class SecurityConfigSignal(BaseModel):
     )
 
 
+class VulnerabilitySink(BaseModel):
+    sink_type: str = Field(
+        description="Vulnerability sink category: xss, sql_injection, command_injection, ssrf, deserialization, path_traversal, xxe, ldap_injection, or template_injection."
+    )
+    location: str = Field(description="File path and line reference where the sink was identified.")
+    context: str = Field(description="Code context showing the dangerous sink pattern.")
+    input_sources: list[str] = Field(
+        default_factory=list,
+        description="Potential user-controlled input sources that could reach this sink.",
+    )
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+    scope_classification: Literal["in_scope", "out_of_scope"] = Field(
+        description="Whether this sink is network-reachable and relevant to downstream vulnerability analysis."
+    )
+    mitigation_present: bool = Field(
+        default=False,
+        description="Whether sanitization, validation, or other mitigation was detected near this sink.",
+    )
+
+
+class DataFlowPattern(BaseModel):
+    data_type: str = Field(
+        description="Sensitive data category: credentials, pii, tokens, api_keys, session_data, credit_cards, health_records, or other."
+    )
+    sources: list[str] = Field(
+        default_factory=list,
+        description="Code locations where this sensitive data originates or is collected.",
+    )
+    sinks: list[str] = Field(
+        default_factory=list,
+        description="Code locations where this sensitive data is consumed, stored, or transmitted.",
+    )
+    encryption_status: Literal["encrypted", "plaintext", "mixed", "unknown"] = Field(
+        description="Whether sensitive data is protected by encryption in transit and at rest."
+    )
+    storage_locations: list[str] = Field(
+        default_factory=list,
+        description="Where sensitive data is persisted: database, file, cache, session, or third_party.",
+    )
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+    compliance_concerns: list[str] = Field(
+        default_factory=list,
+        description="Potential compliance issues: gdpr, hipaa, pci_dss, sox, or custom requirements.",
+    )
+
+
 class PreReconReport(BaseModel):
     target_url: str = Field(description="Authorized target URL evaluated during prerecon.")
     canonical_url: str = Field(description="Normalized canonical URL used for prerecon baselining.")
@@ -254,6 +304,14 @@ class PreReconReport(BaseModel):
     security_config: list[SecurityConfigSignal] = Field(
         default_factory=list,
         description="Security middleware and policy signals relevant to safe recon planning.",
+    )
+    vulnerability_sinks: list[VulnerabilitySink] = Field(
+        default_factory=list,
+        description="Identified vulnerability sinks (XSS, injection, SSRF, etc.) discovered during code analysis.",
+    )
+    data_flow_patterns: list[DataFlowPattern] = Field(
+        default_factory=list,
+        description="Sensitive data flow patterns traced through the codebase for security and compliance analysis.",
     )
     scope_inputs: dict[str, Any] = Field(
         default_factory=dict,

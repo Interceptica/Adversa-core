@@ -1,0 +1,52 @@
+# mise-en-place configuration for Adversa
+# https://mise.jdx.dev/getting-started.html
+
+[tools]
+python = "3.11"
+
+[env]
+_.file = ".env"
+ADVERSA_ENV = "development"
+
+# Task aliases for common operations
+[tasks.install]
+description = "Install Python dependencies via uv"
+run = "uv sync"
+
+[tasks.test]
+description = "Run pytest test suite"
+run = "pytest"
+
+[tasks.test-watch]
+description = "Run pytest in watch mode"
+run = "pytest-watch"
+
+[tasks.lint]
+description = "Run ruff linter"
+run = "ruff check ."
+
+[tasks.lint-fix]
+description = "Run ruff with auto-fix"
+run = "ruff check . --fix"
+
+[tasks.worker]
+description = "Start Temporal workflow worker"
+run = "python -m adversa.workflow_temporal.worker"
+
+[tasks.cli]
+description = "Run Adversa CLI"
+run = "python -m adversa"
+
+[tasks.init]
+description = "Initialize Adversa config"
+run = "python -m adversa init"
+
+[tasks.dev]
+description = "Start development environment (worker in background)"
+run = "python -m adversa.workflow_temporal.worker"
+
+# Optional: Network discovery tools (uncomment to manage via mise)
+# [tools]
+# nmap = "7.94"
+# subfinder = "latest"
+# httpx = "latest"

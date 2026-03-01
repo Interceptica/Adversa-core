@@ -85,6 +85,95 @@ Phase 5: Security configuration
 - Identify authorization/permission models
 - Check for exposed secrets in config (report as finding, do not extract)
 
+Phase 6: Vulnerability sink discovery
+CRITICAL: This phase identifies dangerous code patterns where user input could lead to security vulnerabilities.
+
+For each sink type, search for patterns and determine if IN-SCOPE or OUT-OF-SCOPE:
+
+XSS Sinks (Cross-Site Scripting):
+- DOM manipulation: innerHTML, outerHTML, document.write, insertAdjacentHTML
+- Template rendering without escaping: dangerouslySetInnerHTML, v-html, [innerHTML]
+- Direct HTML construction from user input
+- Unsafe JavaScript contexts: eval with user data, setTimeout/setInterval with string arguments
+
+SQL Injection Sinks:
+- Raw SQL query construction with string concatenation
+- ORM bypasses using raw() or execute()
+- Dynamic table/column names from user input
+- Stored procedure calls with unvalidated parameters
+
+Command Injection Sinks:
+- System command execution: exec, spawn, shell_exec, system, popen
+- Shell commands with user-controlled arguments
+- Subprocess calls without proper escaping
+- Template injection in command strings
+
+SSRF Sinks (Server-Side Request Forgery):
+- HTTP client calls with user-controlled URLs
+- URL fetchers, link preview generators
+- Webhook dispatchers
+- Image/file loading from URLs
+- XML/YAML parsers with external entity resolution
+
+Deserialization Sinks:
+- Unsafe object deserialization: pickle.loads, yaml.load (without safe_load)
+- JSON parsing with reviver functions
+- XML deserialization with type handling
+- Binary protocol deserialization
+
+Path Traversal Sinks:
+- File operations with user-controlled paths
+- Directory listing/browsing functionality
+- File download/upload handlers
+- Static file serving without normalization
+
+For each identified sink, document:
+- Exact file path and line number
+- Code context showing the dangerous pattern
+- Potential input sources that could reach this sink
+- Whether any mitigation (sanitization, validation, escaping) is present
+- Evidence level (HIGH for direct dangerous usage, MEDIUM for potentially mitigated, LOW for assumed risk)
+- Scope classification (in_scope if network-reachable, out_of_scope if CLI/test/build only)
+
+Phase 7: Data security and sensitive data flow analysis
+CRITICAL: This phase traces how sensitive data moves through the application for security and compliance.
+
+Identify and trace these data types:
+
+Credentials & Secrets:
+- Password fields and authentication data
+- API keys, tokens, session identifiers
+- OAuth tokens, JWT secrets
+- Encryption keys, private keys
+- Database credentials, service account keys
+
+Personal Identifiable Information (PII):
+- Email addresses, phone numbers
+- Names, addresses, birthdates
+- Social security numbers, national IDs
+- IP addresses, geolocation data
+- User preferences, behavioral data
+
+Financial Data:
+- Credit card numbers, CVV codes
+- Bank account numbers, routing numbers
+- Payment tokens, transaction history
+- Billing information
+
+Health Records (if applicable):
+- Medical records, diagnoses
+- Health insurance information
+- Prescription data
+- Biometric data
+
+For each data type found, trace:
+- Sources: Where data is collected (forms, APIs, webhooks, imports)
+- Sinks: Where data is stored (database tables, cache, session, files, third-party services)
+- Encryption status: encrypted in transit, encrypted at rest, plaintext, or mixed
+- Storage locations: database, file system, cache, session storage, third-party APIs
+- Compliance concerns: GDPR, HIPAA, PCI-DSS, SOX, or other regulatory requirements
+- Evidence level based on code clarity
+
 Output contract:
 - Return a complete structured `PreReconReport`.
 - `framework_signals`:
@@ -109,6 +198,16 @@ Output contract:
 - `security_config`:
   - security middleware locations
   - CORS, rate limiting, etc.
+- `vulnerability_sinks`:
+  - identified XSS, injection, SSRF, deserialization, and path traversal sinks
+  - include file locations, code context, input sources, and mitigation status
+  - mark as in_scope or out_of_scope
+  - prioritize HIGH evidence sinks
+- `data_flow_patterns`:
+  - sensitive data types and their flow through the application
+  - sources, sinks, encryption status, storage locations
+  - compliance concerns (GDPR, HIPAA, PCI-DSS, etc.)
+  - evidence level for each pattern
 - `repo_top_level_entries`:
   - include only observed top-level files/directories that matter for repo orientation
 - `warnings`:
@@ -127,6 +226,8 @@ Completeness checklist (internal - do not output):
 - [ ] Found schema files
 - [ ] Checked for external integrations
 - [ ] Reviewed security configuration
+- [ ] Discovered vulnerability sinks (XSS, injection, SSRF, deserialization, path traversal)
+- [ ] Traced sensitive data flows (credentials, PII, financial, health records)
 
 Important discipline:
 - Do not merely echo intake inputs back as findings.
