@@ -40,7 +40,7 @@ Use this document as the operating contract for any coding agent working in this
 - Before starting implementation for a ticket, move that Linear issue to `In Progress`.
 - Only move tickets that are actively being worked in the current branch/session.
 - One implementation ticket per branch whenever practical.
-- Branch naming must follow: `codex/<linear-id>-<short-kebab-summary>`.
+- Branch naming must follow: `claude/<linear-id>-<short-kebab-summary>`.
 - PR title should include the Linear ID and map to the same scope as the branch.
 - If scope expands, create/attach a new ticket instead of silently broadening a PR.
 - Before handing off, ensure Linear status, dependencies, and labels reflect real code status.

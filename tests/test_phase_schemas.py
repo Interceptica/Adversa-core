@@ -30,6 +30,8 @@ def test_schema_export_writes_valid_json_schema_files(tmp_path: Path) -> None:
         "SchemaFile.json",
         "ExternalIntegration.json",
         "SecurityConfigSignal.json",
+        "VulnerabilitySink.json",
+        "DataFlowPattern.json",
         "PreReconReport.json",
         "ArtifactIndex.json",
         "ManifestState.json",
