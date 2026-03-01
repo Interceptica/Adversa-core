@@ -96,7 +96,7 @@ phases = ["recon", "vuln"]
     assert validate_run_plan(plan_path) is True
 
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    assert plan["phases"] == ["intake", "prerecon", "recon", "vuln", "report"]
+    assert plan["phases"] == ["intake", "prerecon", "netdisc", "recon", "vuln", "report"]
     assert plan["max_concurrent_pipelines"] == 1
     recon_expectation = next(item for item in plan["phase_expectations"] if item["phase"] == "recon")
     assert recon_expectation["selected_analyzers"][0] == "attack_surface_mapper"

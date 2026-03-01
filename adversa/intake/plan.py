@@ -9,6 +9,7 @@ from adversa.state.models import PHASES, PhaseExpectation, PlanBudget, PlanWarni
 PHASE_REQUIRED_ARTIFACTS: dict[str, list[str]] = {
     "intake": ["scope.json", "plan.json", "coverage_intake.json"],
     "prerecon": ["pre_recon.json"],
+    "netdisc": ["network_discovery.json"],
     "recon": ["system_map.json", "attack_surface.json"],
     "vuln": ["findings.json", "risk_register.json"],
     "report": ["report.md", "exec_summary.md", "retest_plan.json"],
@@ -21,6 +22,10 @@ PHASE_GOALS: dict[str, list[str]] = {
     ],
     "prerecon": [
         "Collect repository and target metadata before active recon.",
+    ],
+    "netdisc": [
+        "Discover network hosts, services, and TLS configurations within authorized scope.",
+        "Provide baseline network intelligence for downstream recon.",
     ],
     "recon": [
         "Map the exposed system surface and supporting security models.",

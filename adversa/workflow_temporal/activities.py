@@ -30,6 +30,9 @@ PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, object]] = {
     "prerecon": {
         "pre_recon.json": {"phase": "prerecon", "status": "stub"},
     },
+    "netdisc": {
+        "network_discovery.json": {"phase": "netdisc", "status": "stub"},
+    },
     "recon": {
         "system_map.json": {"phase": "recon", "assets": []},
         "attack_surface.json": {"phase": "recon", "entries": []},
@@ -129,6 +132,63 @@ def _write_prerecon_artifacts(
         encoding="utf-8",
     )
     return [pre_recon_path, evidence_path]
+
+
+def _write_netdisc_artifacts(
+    store: ArtifactStore,
+    *,
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    repo_path: str,
+    url: str,
+    effective_config_path: str,
+) -> list[Path]:
+    """Write network discovery artifacts for the netdisc phase."""
+    from adversa.netdisc.controller import build_network_discovery_report
+    from adversa.state.schemas import validate_network_discovery
+
+    phase_dir = store.phase_dir("netdisc")
+    try:
+        report = build_network_discovery_report(
+            workspace_root=workspace_root,
+            workspace=workspace,
+            run_id=run_id,
+            repo_path=repo_path,
+            url=url,
+            config_path=effective_config_path,
+        )
+    except Exception as exc:
+        classified = classify_provider_error(exc)
+        raise ApplicationError(
+            str(classified),
+            type=classified.kind.value,
+            non_retryable=classified.kind != LLMErrorKind.TRANSIENT,
+        ) from exc
+
+    network_discovery_path = phase_dir / "network_discovery.json"
+    network_discovery_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    if not validate_network_discovery(network_discovery_path):
+        raise ApplicationError("Invalid netdisc artifact generated.", type="invalid_netdisc_output", non_retryable=True)
+
+    evidence_path = phase_dir / "evidence" / "baseline.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "target_url": report.target_url,
+                "canonical_url": report.canonical_url,
+                "discovered_hosts": [item.model_dump(mode="json") for item in report.discovered_hosts],
+                "service_fingerprints": [item.model_dump(mode="json") for item in report.service_fingerprints],
+                "tls_observations": [item.model_dump(mode="json") for item in report.tls_observations],
+                "port_services": [item.model_dump(mode="json") for item in report.port_services],
+                "scope_inputs": report.scope_inputs,
+                "plan_inputs": report.plan_inputs,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return [network_discovery_path, evidence_path]
 
 
 @activity.defn
@@ -281,6 +341,45 @@ async def run_phase_activity(
             "warnings": prerecon_payload["warnings"],
         }
 
+    if phase == "netdisc":
+        extra_files = _write_netdisc_artifacts(
+            store,
+            workspace_root=workspace_root,
+            workspace=workspace,
+            run_id=run_id,
+            repo_path=repo_path,
+            url=url,
+            effective_config_path=effective_config_path,
+        )
+        netdisc_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
+        phase_summary = (
+            f"Network discovery found {len(netdisc_payload['discovered_hosts'])} hosts "
+            f"and {len(netdisc_payload['service_fingerprints'])} service fingerprints."
+        )
+        phase_data["agent_runtime"] = {
+            "status": "completed",
+            "agent_name": "adversa-netdisc",
+            "middleware": agent_execution.middleware,
+            "executed": True,
+            "runner": "tools",
+        }
+        evidence = [
+            EvidenceRef(
+                id="netdisc-baseline",
+                path="netdisc/evidence/baseline.json",
+                note="Network discovery baseline with discovered hosts, fingerprints, and TLS observations.",
+            )
+        ]
+        phase_data["netdisc"] = {
+            "discovered_hosts": netdisc_payload["discovered_hosts"],
+            "service_fingerprints": netdisc_payload["service_fingerprints"],
+            "tls_observations": netdisc_payload["tls_observations"],
+            "port_services": netdisc_payload["port_services"],
+            "passive_discovery_enabled": netdisc_payload["passive_discovery_enabled"],
+            "active_scanning_enabled": netdisc_payload["active_scanning_enabled"],
+            "warnings": netdisc_payload["warnings"],
+        }
+
     output = PhaseOutput(
         phase=phase,
         summary=phase_summary,
@@ -325,10 +424,30 @@ async def run_phase_activity(
             encoding="utf-8",
         )
 
+    if phase == "netdisc":
+        netdisc_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
+        files["coverage"].write_text(
+            json.dumps(
+                {
+                    "phase": "netdisc",
+                    "status": "complete",
+                    "discovered_host_count": len(netdisc_payload["discovered_hosts"]),
+                    "service_fingerprint_count": len(netdisc_payload["service_fingerprints"]),
+                    "tls_observation_count": len(netdisc_payload["tls_observations"]),
+                    "port_service_count": len(netdisc_payload["port_services"]),
+                    "passive_discovery_enabled": netdisc_payload["passive_discovery_enabled"],
+                    "active_scanning_enabled": netdisc_payload["active_scanning_enabled"],
+                    "warnings": netdisc_payload["warnings"],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
     evidence_path = store.phase_dir(phase) / "evidence" / "stub.txt"
-    if phase != "prerecon":
+    if phase not in ("prerecon", "netdisc"):
         evidence_path.write_text("evidence", encoding="utf-8")
-    if phase != "prerecon":
+    if phase not in ("prerecon", "netdisc"):
         extra_files = _write_extra_phase_artifacts(
             store,
             phase,
@@ -338,7 +457,7 @@ async def run_phase_activity(
             safe_mode=cfg.safety.safe_mode,
         )
     index_paths = [*files.values(), *extra_files]
-    if phase != "prerecon":
+    if phase not in ("prerecon", "netdisc"):
         index_paths.append(evidence_path)
     store.append_index(index_paths)
     audit.log_tool_call(

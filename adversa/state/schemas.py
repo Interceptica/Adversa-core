@@ -3,7 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from adversa.state.models import ArtifactIndex, ManifestState, PhaseOutput, PreReconReport, RunPlan, schema_export
+from adversa.state.models import (
+    ArtifactIndex,
+    ManifestState,
+    NetworkDiscoveryReport,
+    PhaseOutput,
+    PreReconReport,
+    RunPlan,
+    schema_export,
+)
 
 
 def validate_phase_output(path: Path) -> bool:
@@ -37,6 +45,16 @@ def validate_pre_recon(path: Path) -> bool:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         PreReconReport.model_validate(payload)
+        return True
+    except Exception:
+        return False
+
+
+def validate_network_discovery(path: Path) -> bool:
+    """Validate network discovery report artifact."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        NetworkDiscoveryReport.model_validate(payload)
         return True
     except Exception:
         return False
