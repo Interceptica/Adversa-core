@@ -16,10 +16,11 @@ from adversa.llm.errors import LLMErrorKind, LLMProviderError
 from adversa.llm.providers import ProviderClient
 from adversa.logging.audit import AuditLogger
 from adversa.prerecon.controller import build_prerecon_report
+from adversa.recon.controller import build_recon_report
 from adversa.security.rule_compiler import compile_rules
 from adversa.security.rules import RuntimeTarget, evaluate_rules
 from adversa.state.models import EvidenceRef, ManifestState, PhaseOutput
-from adversa.state.schemas import validate_phase_output, validate_pre_recon
+from adversa.state.schemas import validate_phase_output, validate_pre_recon, validate_recon
 
 
 PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, object]] = {
@@ -34,8 +35,7 @@ PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, object]] = {
         "network_discovery.json": {"phase": "netdisc", "status": "stub"},
     },
     "recon": {
-        "system_map.json": {"phase": "recon", "assets": []},
-        "attack_surface.json": {"phase": "recon", "entries": []},
+        "recon.json": {"phase": "recon", "status": "stub"},
     },
     "vuln": {
         "findings.json": {"phase": "vuln", "findings": [], "safe_mode": True},
@@ -205,6 +205,69 @@ def _write_netdisc_artifacts(
         encoding="utf-8",
     )
     return [network_discovery_path, markdown_path, evidence_path]
+
+
+async def _write_recon_artifacts(
+    store: ArtifactStore,
+    *,
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    repo_path: str,
+    url: str,
+    effective_config_path: str,
+) -> list[Path]:
+    """Write recon attack surface map artifacts."""
+    from adversa.recon.reports import generate_recon_markdown
+
+    phase_dir = store.phase_dir("recon")
+    try:
+        report = await build_recon_report(
+            workspace_root=workspace_root,
+            workspace=workspace,
+            run_id=run_id,
+            repo_path=repo_path,
+            url=url,
+            config_path=effective_config_path,
+        )
+    except Exception as exc:
+        classified = classify_provider_error(exc)
+        raise ApplicationError(
+            str(classified),
+            type=classified.kind.value,
+            non_retryable=classified.kind != LLMErrorKind.TRANSIENT,
+        ) from exc
+
+    recon_path = phase_dir / "recon.json"
+    recon_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    if not validate_recon(recon_path):
+        raise ApplicationError("Invalid recon artifact generated.", type="invalid_recon_output", non_retryable=True)
+
+    markdown_content = generate_recon_markdown(report)
+    markdown_path = phase_dir / "recon_analysis.md"
+    markdown_path.write_text(markdown_content, encoding="utf-8")
+
+    evidence_path = phase_dir / "evidence" / "baseline.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "target_url": report.target_url,
+                "canonical_url": report.canonical_url,
+                "endpoints": [item.model_dump(mode="json") for item in report.endpoints],
+                "input_vectors": [item.model_dump(mode="json") for item in report.input_vectors],
+                "network_entities": [item.model_dump(mode="json") for item in report.network_entities],
+                "network_flows": [item.model_dump(mode="json") for item in report.network_flows],
+                "privilege_roles": [item.model_dump(mode="json") for item in report.privilege_roles],
+                "authz_candidates": [item.model_dump(mode="json") for item in report.authz_candidates],
+                "live_observations": report.live_observations,
+                "scope_inputs": report.scope_inputs,
+                "plan_inputs": report.plan_inputs,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return [recon_path, markdown_path, evidence_path]
 
 
 @activity.defn
@@ -396,6 +459,46 @@ async def run_phase_activity(
             "warnings": netdisc_payload["warnings"],
         }
 
+    if phase == "recon":
+        extra_files = await _write_recon_artifacts(
+            store,
+            workspace_root=workspace_root,
+            workspace=workspace,
+            run_id=run_id,
+            repo_path=repo_path,
+            url=url,
+            effective_config_path=effective_config_path,
+        )
+        recon_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
+        phase_summary = (
+            f"Recon mapped {len(recon_payload['endpoints'])} endpoints, "
+            f"{len(recon_payload['privilege_roles'])} roles, and "
+            f"{len(recon_payload['authz_candidates'])} authz candidates."
+        )
+        phase_data["agent_runtime"] = {
+            "status": "completed",
+            "agent_name": "adversa-recon",
+            "middleware": agent_execution.middleware,
+            "executed": True,
+            "runner": "deepagents",
+        }
+        evidence = [
+            EvidenceRef(
+                id="recon-baseline",
+                path="recon/evidence/baseline.json",
+                note="Recon baseline with endpoints, input vectors, network map, and authz candidates.",
+            )
+        ]
+        phase_data["recon"] = {
+            "endpoints": recon_payload["endpoints"],
+            "input_vectors": recon_payload["input_vectors"],
+            "network_entities": recon_payload["network_entities"],
+            "privilege_roles": recon_payload["privilege_roles"],
+            "authz_candidates": recon_payload["authz_candidates"],
+            "live_observations": recon_payload["live_observations"],
+            "warnings": recon_payload["warnings"],
+        }
+
     output = PhaseOutput(
         phase=phase,
         summary=phase_summary,
@@ -460,10 +563,34 @@ async def run_phase_activity(
             encoding="utf-8",
         )
 
+    if phase == "recon":
+        recon_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
+        files["coverage"].write_text(
+            json.dumps(
+                {
+                    "phase": "recon",
+                    "status": "complete",
+                    "endpoint_count": len(recon_payload["endpoints"]),
+                    "input_vector_count": len(recon_payload["input_vectors"]),
+                    "network_entity_count": len(recon_payload["network_entities"]),
+                    "privilege_role_count": len(recon_payload["privilege_roles"]),
+                    "authz_candidate_count": len(recon_payload["authz_candidates"]),
+                    "high_priority_authz_count": sum(
+                        1 for c in recon_payload["authz_candidates"] if c.get("priority") == "high"
+                    ),
+                    "live_observation_count": len(recon_payload["live_observations"]),
+                    "warnings": recon_payload["warnings"],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    _REAL_PHASES = ("prerecon", "netdisc", "recon")
     evidence_path = store.phase_dir(phase) / "evidence" / "stub.txt"
-    if phase not in ("prerecon", "netdisc"):
+    if phase not in _REAL_PHASES:
         evidence_path.write_text("evidence", encoding="utf-8")
-    if phase not in ("prerecon", "netdisc"):
+    if phase not in _REAL_PHASES:
         extra_files = _write_extra_phase_artifacts(
             store,
             phase,
@@ -473,7 +600,7 @@ async def run_phase_activity(
             safe_mode=cfg.safety.safe_mode,
         )
     index_paths = [*files.values(), *extra_files]
-    if phase not in ("prerecon", "netdisc"):
+    if phase not in _REAL_PHASES:
         index_paths.append(evidence_path)
     store.append_index(index_paths)
     audit.log_tool_call(

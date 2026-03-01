@@ -145,7 +145,22 @@ phases = ["vuln"]
     assert agent_events[-1]["event_type"] == "phase_blocked_by_rule"
 
 
-def test_activity_persists_selected_analyzers_from_rules(tmp_path: Path) -> None:
+def test_activity_persists_selected_analyzers_from_rules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from adversa.state.models import ReconReport
+    from adversa.workflow_temporal import activities as workflow_activities
+
+    async def _fake_recon(**kwargs):  # type: ignore[no-untyped-def]
+        return ReconReport(
+            target_url=kwargs["url"],
+            canonical_url=kwargs["url"],
+            host="staging.example.com",
+            path="/api/users",
+        )
+
+    monkeypatch.setattr(workflow_activities, "build_recon_report", _fake_recon)
+
     config_path = tmp_path / "adversa.toml"
     config_path.write_text(
         """
@@ -180,7 +195,7 @@ phases = ["recon"]
     output = json.loads((tmp_path / "ws" / "run1" / "recon" / "output.json").read_text(encoding="utf-8"))
     assert output["data"]["selected_analyzers"] == ["auth_model_builder", "data_flow_mapper"]
     assert output["data"]["agent_runtime"]["middleware"] == ["RulesGuardrailMiddleware"]
-    assert output["data"]["agent_runtime"]["executed"] is False
+    assert output["data"]["agent_runtime"]["executed"] is True
 
 
 def test_load_config_accepts_user_facing_rule_aliases(tmp_path: Path) -> None:

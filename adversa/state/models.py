@@ -449,6 +449,154 @@ class NetworkDiscoveryReport(BaseModel):
     )
 
 
+class ReconEndpoint(BaseModel):
+    method: str = Field(description="HTTP method: GET, POST, PUT, DELETE, PATCH, etc.")
+    path: str = Field(description="Route path, e.g. /api/users/{user_id}.")
+    required_role: str = Field(description="Minimum role required to call this endpoint: anon, user, admin, etc.")
+    object_id_params: list[str] = Field(
+        default_factory=list,
+        description="Path or query parameters that identify a specific object (IDOR candidates).",
+    )
+    auth_mechanism: str = Field(description="Auth enforcement code reference, e.g. 'Bearer Token + requireAuth()'.")
+    handler_location: str = Field(description="File and line number of the route handler, e.g. 'controllers/users.py:42'.")
+    description: str = Field(description="Short description of what this endpoint does.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence in this mapping based on code evidence quality."
+    )
+
+
+class InputVector(BaseModel):
+    vector_type: str = Field(
+        description="Input type: url_param, post_body, header, cookie, file_upload, graphql_arg, websocket_msg."
+    )
+    name: str = Field(description="Field or parameter name as it appears in the request.")
+    endpoint: str = Field(description="Endpoint this input belongs to, e.g. POST /api/users.")
+    location: str = Field(description="File and line number where this input is handled, e.g. 'routes/users.js:55'.")
+    validation_present: bool = Field(description="Whether any input validation or sanitization is applied.")
+    flows_to_sink: bool = Field(description="Whether this input reaches a dangerous code pattern (sink).")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence based on code evidence quality."
+    )
+
+
+class NetworkEntity(BaseModel):
+    title: str = Field(description="Human-readable name for this entity, e.g. 'API Server', 'PostgreSQL DB'.")
+    entity_type: Literal["Service", "DataStore", "Identity", "ThirdParty", "AdminPlane", "ExternAsset"] = Field(
+        description="Category of this network entity."
+    )
+    zone: Literal["Internet", "Edge", "App", "Data", "Admin", "ThirdParty"] = Field(
+        description="Network zone where this entity resides."
+    )
+    tech: str = Field(description="Technology stack, e.g. 'Node/Express', 'PostgreSQL 15', 'Redis'.")
+    data_sensitivity: list[str] = Field(
+        default_factory=list,
+        description="Data types this entity handles: PII, Tokens, Payments, Secrets, Public.",
+    )
+    notes: str = Field(default="", description="Additional notes about this entity.")
+
+
+class NetworkFlow(BaseModel):
+    from_entity: str = Field(description="Source entity title.")
+    to_entity: str = Field(description="Destination entity title.")
+    channel: str = Field(description="Communication channel: HTTPS, TCP, Message, File, gRPC.")
+    path_port: str = Field(description="Path or port qualifier, e.g. ':443 /api/auth' or ':5432'.")
+    guards: list[str] = Field(
+        default_factory=list,
+        description="Security controls on this flow, e.g. 'auth:user', 'vpc-only', 'mTLS'.",
+    )
+    touches: list[str] = Field(
+        default_factory=list,
+        description="Data sensitivity types that flow through this channel: PII, Tokens, Payments, Secrets.",
+    )
+
+
+class AuthorizationGuard(BaseModel):
+    name: str = Field(description="Guard identifier, e.g. 'auth:user', 'ownership:user', 'require_admin'.")
+    category: str = Field(description="Guard category: Auth, Network, Protocol, Authorization, ObjectOwnership.")
+    statement: str = Field(description="Human-readable description of what this guard enforces.")
+
+
+class PrivilegeRole(BaseModel):
+    name: str = Field(description="Role name, e.g. anon, user, moderator, admin, superadmin.")
+    privilege_level: int = Field(description="Privilege level 0–10, where 0 is public and 10 is superadmin.")
+    scope: str = Field(description="Role scope: Global, Org, Team, Resource.")
+    middleware_location: str = Field(
+        default="", description="File and line of the middleware or guard enforcing this role."
+    )
+    default_landing: str = Field(default="", description="Default landing route after login for this role.")
+
+
+class AuthzCandidate(BaseModel):
+    candidate_type: Literal["horizontal", "vertical", "context_based"] = Field(
+        description="Horizontal: same-role object access. Vertical: privilege escalation. Context: workflow bypass."
+    )
+    priority: Literal["high", "medium", "low"] = Field(
+        description="Testing priority based on data sensitivity and object exposure."
+    )
+    endpoint_pattern: str = Field(description="Endpoint pattern where this candidate applies, e.g. '/api/orders/{id}'.")
+    object_id_param: str | None = Field(
+        default=None, description="The object ID parameter name relevant to this candidate."
+    )
+    data_type: str = Field(description="Type of data exposed: financial, user_data, admin_config, health_records, etc.")
+    notes: str = Field(description="Rationale for why this is a candidate and how to test it.")
+
+
+class ReconReport(BaseModel):
+    target_url: str = Field(description="Authorized target URL for this recon run.")
+    canonical_url: str = Field(description="Normalized canonical URL.")
+    host: str = Field(description="Normalized host extracted from the target URL.")
+    path: str = Field(description="Normalized path extracted from the target URL.")
+    executive_summary: str = Field(
+        default="", description="High-level summary of application purpose, tech stack, and primary attack surface."
+    )
+    frontend_tech: list[str] = Field(default_factory=list, description="Detected frontend technologies and frameworks.")
+    backend_tech: list[str] = Field(default_factory=list, description="Detected backend technologies and frameworks.")
+    infrastructure: list[str] = Field(
+        default_factory=list, description="Infrastructure components: CDN, load balancers, cloud services."
+    )
+    endpoints: list[ReconEndpoint] = Field(
+        default_factory=list, description="Complete inventory of network-accessible API endpoints with auth requirements."
+    )
+    input_vectors: list[InputVector] = Field(
+        default_factory=list,
+        description="All user-controlled input vectors with file locations and sink flow status.",
+    )
+    network_entities: list[NetworkEntity] = Field(
+        default_factory=list, description="Services, datastores, and external entities in the network map."
+    )
+    network_flows: list[NetworkFlow] = Field(
+        default_factory=list, description="Communication flows between network entities."
+    )
+    authorization_guards: list[AuthorizationGuard] = Field(
+        default_factory=list, description="Security guards and authorization controls identified in the codebase."
+    )
+    privilege_roles: list[PrivilegeRole] = Field(
+        default_factory=list, description="User roles with privilege levels and code locations."
+    )
+    authz_candidates: list[AuthzCandidate] = Field(
+        default_factory=list,
+        description="Pre-prioritized authorization vulnerability candidates for the vuln phase.",
+    )
+    live_observations: list[str] = Field(
+        default_factory=list,
+        description="Observations from live browser interaction: redirects, auth prompts, observed endpoints.",
+    )
+    scope_inputs: dict[str, Any] = Field(
+        default_factory=dict, description="Key scope inputs consumed from the intake phase."
+    )
+    plan_inputs: dict[str, Any] = Field(
+        default_factory=dict, description="Relevant planner expectations consumed by recon."
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Operator-facing warnings about weak evidence, gaps, or ambiguities.",
+    )
+    remediation_hints: list[str] = Field(
+        default_factory=list,
+        description="Concrete next steps to strengthen recon or improve coverage.",
+    )
+
+
 class ArtifactEntry(BaseModel):
     path: str = Field(description="Run-relative path to a generated artifact file.")
     sha256: str = Field(description="SHA-256 digest of the artifact contents for reproducibility checks.")
@@ -540,6 +688,14 @@ def schema_export(target_dir: Path) -> None:
         TLSObservation,
         PortService,
         NetworkDiscoveryReport,
+        ReconEndpoint,
+        InputVector,
+        NetworkEntity,
+        NetworkFlow,
+        AuthorizationGuard,
+        PrivilegeRole,
+        AuthzCandidate,
+        ReconReport,
         ArtifactIndex,
         ManifestState,
         WorkflowInput,
