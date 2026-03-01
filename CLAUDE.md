@@ -108,7 +108,7 @@ Adversa is a **Temporal-based durable workflow CLI** for authorized security tes
    - Repository path validation via `security/scope.py`
 
 2. **Temporal Workflow** (`workflow_temporal/workflows.py`)
-   - Durable state machine sequencing through phases: `intake` → `prerecon` → (`netdisc` - planned) → `recon` → `vuln` → `report`
+   - Durable state machine sequencing through phases: `intake` → `prerecon` → `netdisc` → `recon` → `vuln` → `report`
    - Signal handlers: `pause()`, `resume()`, `cancel()`, `update_config()`
    - Config error recovery: enters "waiting for config" state (up to 24 hours) for missing API keys / 401 errors
    - State tracking: current phase, completed phases, paused/canceled status, last error
@@ -211,11 +211,12 @@ Each phase must emit schema-valid artifacts:
   - Data flow patterns (sensitive data tracking)
   - Schema files (OpenAPI, GraphQL)
   - External integrations, security config
-- **Network Discovery** (planned): `network_discovery.json`, coverage + evidence pack with:
-  - Subdomain enumeration (subfinder)
-  - Port/service discovery (nmap - safe mode only)
-  - TLS/SSL configuration analysis
-  - DNS records and zone data
+- **Network Discovery**: `network_discovery.json`, `coverage_netdisc.json`, evidence pack with:
+  - Subdomain enumeration (subfinder - passive)
+  - HTTP service fingerprinting (whatweb/httpx/curl)
+  - TLS/SSL certificate analysis (openssl)
+  - Optional port/service discovery (nmap - requires explicit opt-in)
+  - Scope-enforced host classification
 - **Recon**: `system_map.json`, `attack_surface.json`, auth/authz/data-flow models
 - **Vulnerability**: `findings.json`, `risk_register.json`, analyzer evidence
 - **Reporting**: `report.md`, `exec_summary.md`, `retest_plan.json`, bundle index/metadata

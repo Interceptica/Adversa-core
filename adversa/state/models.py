@@ -15,7 +15,7 @@ class EvidenceRef(BaseModel):
 
 
 class PhaseOutput(BaseModel):
-    phase: Literal["intake", "prerecon", "recon", "vuln", "report"] = Field(
+    phase: Literal["intake", "prerecon", "netdisc", "recon", "vuln", "report"] = Field(
         description="Lifecycle phase that produced this output."
     )
     generated_at: datetime = Field(
@@ -41,7 +41,7 @@ class PlanBudget(BaseModel):
 
 
 class PhaseExpectation(BaseModel):
-    phase: Literal["intake", "prerecon", "recon", "vuln", "report"] = Field(
+    phase: Literal["intake", "prerecon", "netdisc", "recon", "vuln", "report"] = Field(
         description="Phase this execution expectation applies to."
     )
     selected_analyzers: list[str] = Field(
@@ -68,7 +68,7 @@ class PlanWarning(BaseModel):
 
 
 class RunPlan(BaseModel):
-    phases: list[Literal["intake", "prerecon", "recon", "vuln", "report"]] = Field(
+    phases: list[Literal["intake", "prerecon", "netdisc", "recon", "vuln", "report"]] = Field(
         default_factory=list,
         description="Ordered lifecycle phases that the run intends to execute.",
     )
@@ -331,6 +331,124 @@ class PreReconReport(BaseModel):
     )
 
 
+class DiscoveredHost(BaseModel):
+    hostname: str = Field(description="Discovered hostname or subdomain.")
+    ip_addresses: list[str] = Field(
+        default_factory=list,
+        description="Resolved IP addresses for this host.",
+    )
+    source: str = Field(description="Discovery source: subfinder, dns_query, scope_expansion, or manual.")
+    scope_classification: Literal["in_scope", "out_of_scope"] = Field(
+        description="Whether this host is within the authorized scope for this run."
+    )
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+    discovered_at: str = Field(description="ISO 8601 timestamp when this host was discovered.")
+
+
+class ServiceFingerprint(BaseModel):
+    url: str = Field(description="Target URL that was fingerprinted.")
+    http_status: int | None = Field(default=None, description="HTTP response status code if available.")
+    server_header: str | None = Field(default=None, description="Server header value if present.")
+    detected_technologies: list[str] = Field(
+        default_factory=list,
+        description="Detected web technologies, frameworks, or platforms.",
+    )
+    title: str | None = Field(default=None, description="HTML page title if available.")
+    content_type: str | None = Field(default=None, description="Content-Type header value.")
+    tls_enabled: bool = Field(default=False, description="Whether HTTPS/TLS is enabled.")
+    redirect_chain: list[str] = Field(
+        default_factory=list,
+        description="HTTP redirect chain if redirects were followed.",
+    )
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+    source: str = Field(description="Fingerprinting source: whatweb, httpx, curl, or custom.")
+
+
+class TLSObservation(BaseModel):
+    hostname: str = Field(description="Target hostname for TLS inspection.")
+    port: int = Field(default=443, description="Port number where TLS was observed.")
+    tls_version: str | None = Field(default=None, description="TLS protocol version (e.g., TLSv1.3).")
+    cipher_suite: str | None = Field(default=None, description="Negotiated cipher suite.")
+    certificate_subject: str | None = Field(default=None, description="Certificate subject DN.")
+    certificate_issuer: str | None = Field(default=None, description="Certificate issuer DN.")
+    certificate_valid_from: str | None = Field(default=None, description="Certificate validity start date.")
+    certificate_valid_until: str | None = Field(default=None, description="Certificate expiration date.")
+    san_entries: list[str] = Field(
+        default_factory=list,
+        description="Subject Alternative Name entries from the certificate.",
+    )
+    self_signed: bool = Field(default=False, description="Whether the certificate is self-signed.")
+    expired: bool = Field(default=False, description="Whether the certificate is expired.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+
+
+class PortService(BaseModel):
+    host: str = Field(description="Target host where the port was scanned.")
+    port: int = Field(description="Port number.")
+    protocol: str = Field(description="Protocol: tcp or udp.")
+    state: str = Field(description="Port state: open, closed, filtered, or unknown.")
+    service_name: str | None = Field(default=None, description="Detected service name if available.")
+    service_version: str | None = Field(default=None, description="Detected service version if available.")
+    service_product: str | None = Field(default=None, description="Detected service product if available.")
+    banner: str | None = Field(default=None, description="Service banner if captured.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+    scan_method: str = Field(description="Scan method: nmap, netcat, or custom.")
+
+
+class NetworkDiscoveryReport(BaseModel):
+    target_url: str = Field(description="Authorized target URL for network discovery.")
+    canonical_url: str = Field(description="Normalized canonical URL used for discovery.")
+    host: str = Field(description="Normalized host extracted from the target URL.")
+    path: str = Field(description="Normalized path extracted from the target URL.")
+    discovered_hosts: list[DiscoveredHost] = Field(
+        default_factory=list,
+        description="Hosts and subdomains discovered during network enumeration.",
+    )
+    service_fingerprints: list[ServiceFingerprint] = Field(
+        default_factory=list,
+        description="HTTP service fingerprints and technology detection results.",
+    )
+    tls_observations: list[TLSObservation] = Field(
+        default_factory=list,
+        description="TLS/SSL configuration and certificate observations.",
+    )
+    port_services: list[PortService] = Field(
+        default_factory=list,
+        description="Port and service discovery results (only when active scanning is enabled).",
+    )
+    scope_inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Key normalized scope inputs consumed by netdisc.",
+    )
+    plan_inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Relevant planner expectations consumed by netdisc.",
+    )
+    passive_discovery_enabled: bool = Field(
+        description="Whether passive network discovery was enabled for this run."
+    )
+    active_scanning_enabled: bool = Field(
+        default=False,
+        description="Whether active port scanning was enabled for this run.",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Operator-facing warnings and confidence gaps that downstream recon should preserve.",
+    )
+    remediation_hints: list[str] = Field(
+        default_factory=list,
+        description="Actionable next steps when network discovery inputs are incomplete or weak.",
+    )
+
+
 class ArtifactEntry(BaseModel):
     path: str = Field(description="Run-relative path to a generated artifact file.")
     sha256: str = Field(description="SHA-256 digest of the artifact contents for reproducibility checks.")
@@ -394,7 +512,7 @@ class WorkflowStatus(BaseModel):
     canceled: bool = Field(default=False, description="Whether the workflow has been canceled.")
 
 
-PHASES = ["intake", "prerecon", "recon", "vuln", "report"]
+PHASES = ["intake", "prerecon", "netdisc", "recon", "vuln", "report"]
 
 
 def schema_export(target_dir: Path) -> None:
@@ -417,6 +535,11 @@ def schema_export(target_dir: Path) -> None:
         VulnerabilitySink,
         DataFlowPattern,
         PreReconReport,
+        DiscoveredHost,
+        ServiceFingerprint,
+        TLSObservation,
+        PortService,
+        NetworkDiscoveryReport,
         ArtifactIndex,
         ManifestState,
         WorkflowInput,

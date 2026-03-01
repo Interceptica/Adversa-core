@@ -6,6 +6,7 @@ from pathlib import Path
 from adversa.artifacts.store import ArtifactStore
 from adversa.state.models import (
     FrameworkSignal,
+    NetworkDiscoveryReport,
     PreReconReport,
     RouteSurface,
     SecurityConfigSignal,
@@ -59,9 +60,31 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
             remediation_hints=[],
         ),
     )
+    import adversa.netdisc.controller as netdisc_controller
+    monkeypatch.setattr(
+        netdisc_controller,
+        "build_network_discovery_report",
+        lambda **kwargs: NetworkDiscoveryReport(
+            target_url=kwargs["url"],
+            canonical_url=kwargs["url"],
+            host="example.com",
+            path="/",
+            discovered_hosts=[],
+            service_fingerprints=[],
+            tls_observations=[],
+            port_services=[],
+            scope_inputs={},
+            plan_inputs={},
+            passive_discovery_enabled=False,
+            active_scanning_enabled=False,
+            warnings=[],
+            remediation_hints=[],
+        ),
+    )
     expected_phase_files = {
         "intake": {"output.json", "summary.md", "coverage.json", "scope.json", "plan.json", "coverage_intake.json"},
         "prerecon": {"output.json", "summary.md", "coverage.json", "pre_recon.json"},
+        "netdisc": {"output.json", "summary.md", "coverage.json", "network_discovery.json"},
         "recon": {"output.json", "summary.md", "coverage.json", "system_map.json", "attack_surface.json"},
         "vuln": {"output.json", "summary.md", "coverage.json", "findings.json", "risk_register.json"},
         "report": {"output.json", "summary.md", "coverage.json", "report.md", "exec_summary.md", "retest_plan.json"},
@@ -83,7 +106,7 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
 
         phase_dir = tmp_path / "ws" / "run1" / phase
         assert expected_phase_files[phase].issubset({path.name for path in phase_dir.iterdir() if path.is_file()})
-        if phase == "prerecon":
+        if phase in ("prerecon", "netdisc"):
             assert (phase_dir / "evidence" / "baseline.json").exists()
         else:
             assert (phase_dir / "evidence" / "stub.txt").exists()
