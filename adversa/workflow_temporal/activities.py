@@ -113,8 +113,12 @@ def _write_prerecon_artifacts(
             {
                 "target_url": report.target_url,
                 "canonical_url": report.canonical_url,
-                "framework_signals": report.framework_signals,
-                "candidate_routes": report.candidate_routes,
+                "framework_signals": [item.model_dump(mode="json") for item in report.framework_signals],
+                "candidate_routes": [item.model_dump(mode="json") for item in report.candidate_routes],
+                "auth_signals": [item.model_dump(mode="json") for item in report.auth_signals],
+                "schema_files": [item.model_dump(mode="json") for item in report.schema_files],
+                "external_integrations": [item.model_dump(mode="json") for item in report.external_integrations],
+                "security_config": [item.model_dump(mode="json") for item in report.security_config],
                 "scope_inputs": report.scope_inputs,
                 "plan_inputs": report.plan_inputs,
             },
@@ -266,6 +270,10 @@ async def run_phase_activity(
         phase_data["prerecon"] = {
             "framework_signals": prerecon_payload["framework_signals"],
             "candidate_routes": prerecon_payload["candidate_routes"],
+            "auth_signals": prerecon_payload["auth_signals"],
+            "schema_files": prerecon_payload["schema_files"],
+            "external_integrations": prerecon_payload["external_integrations"],
+            "security_config": prerecon_payload["security_config"],
             "warnings": prerecon_payload["warnings"],
         }
 
@@ -302,6 +310,8 @@ async def run_phase_activity(
                     "status": "complete",
                     "framework_signal_count": len(prerecon_payload["framework_signals"]),
                     "candidate_route_count": len(prerecon_payload["candidate_routes"]),
+                    "auth_signal_count": len(prerecon_payload["auth_signals"]),
+                    "schema_file_count": len(prerecon_payload["schema_files"]),
                     "warnings": prerecon_payload["warnings"],
                 },
                 indent=2,

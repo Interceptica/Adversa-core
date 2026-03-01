@@ -4,7 +4,12 @@ import asyncio
 from pathlib import Path
 
 from adversa.artifacts.store import ArtifactStore
-from adversa.state.models import PreReconReport
+from adversa.state.models import (
+    FrameworkSignal,
+    PreReconReport,
+    RouteSurface,
+    SecurityConfigSignal,
+)
 from adversa.state.models import PHASES
 from adversa.workflow_temporal import activities as workflow_activities
 from adversa.workflow_temporal.activities import run_phase_activity
@@ -25,8 +30,29 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
             repo_path=kwargs["repo_path"],
             repo_root_validated=True,
             repo_top_level_entries=["src"],
-            framework_signals=["nodejs_app"],
-            candidate_routes=["/"],
+            framework_signals=[
+                FrameworkSignal(name="nodejs_app", evidence="package.json", evidence_level="high")
+            ],
+            candidate_routes=[
+                RouteSurface(
+                    path="/",
+                    kind="page",
+                    scope_classification="in_scope",
+                    evidence="app/page.tsx",
+                    evidence_level="high",
+                )
+            ],
+            auth_signals=[],
+            schema_files=[],
+            external_integrations=[],
+            security_config=[
+                SecurityConfigSignal(
+                    signal="cors_enabled",
+                    location="middleware.ts",
+                    evidence="CORS middleware configuration",
+                    evidence_level="medium",
+                )
+            ],
             scope_inputs={},
             plan_inputs={},
             warnings=[],

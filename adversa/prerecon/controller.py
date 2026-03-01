@@ -10,11 +10,22 @@ from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 
 from adversa.agent_runtime.context import AdversaAgentContext
-from adversa.agent_runtime.middleware import load_rules_middleware, load_runtime_boundary_middleware
+from adversa.agent_runtime.middleware import (
+    load_rules_middleware,
+    load_runtime_boundary_middleware,
+)
 from adversa.config.load import load_config
 from adversa.llm.providers import ProviderClient
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
-from adversa.state.models import PreReconReport
+from adversa.state.models import (
+    AuthSignal,
+    ExternalIntegration,
+    FrameworkSignal,
+    PreReconReport,
+    RouteSurface,
+    SchemaFile,
+    SecurityConfigSignal,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -67,7 +78,9 @@ def build_prerecon_report(
         system_prompt=PRERECON_PROMPT_PATH.read_text(encoding="utf-8"),
         middleware=[
             load_rules_middleware(context),
-            load_runtime_boundary_middleware(context, allowed_repo_virtual_prefix=inputs.repo_virtual_path),
+            load_runtime_boundary_middleware(
+                context, allowed_repo_virtual_prefix=inputs.repo_virtual_path
+            ),
         ],
         subagents=[_repo_research_subagent()],
         response_format=PreReconReport,
@@ -143,7 +156,9 @@ def load_prerecon_inputs(
     )
 
 
-def _load_intake_inputs(*, workspace_root: str, workspace: str, run_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _load_intake_inputs(
+    *, workspace_root: str, workspace: str, run_id: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
     intake_dir = Path(workspace_root) / workspace / run_id / "intake"
     scope_path = intake_dir / "scope.json"
     plan_path = intake_dir / "plan.json"
@@ -166,7 +181,11 @@ def _load_intake_inputs(*, workspace_root: str, workspace: str, run_id: str) -> 
     if plan_path.exists():
         plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
         prerecon_expectation = next(
-            (item for item in plan_payload.get("phase_expectations", []) if item.get("phase") == "prerecon"),
+            (
+                item
+                for item in plan_payload.get("phase_expectations", [])
+                if item.get("phase") == "prerecon"
+            ),
             {},
         )
         plan_inputs = {
@@ -184,9 +203,10 @@ def _repo_research_subagent() -> dict[str, Any]:
         "name": "repo-researcher",
         "description": "Use this subagent for detailed repository inspection, route discovery, and architecture mapping inside the authorized repo only.",
         "prompt": (
-            "You are a specialist prerecon code analyst. Read only the authorized repository path given in the task. "
-            "Identify framework/runtime signals, important entry points, auth/security components, and candidate routes. "
-            "Return only evidence-backed findings and call out uncertainty explicitly."
+            "You are a specialist prerecon repository analyst. Read only the authorized repository path given in the task.\n"
+            "Focus on high-signal repository evidence for routes, auth/session behavior, schema files, external integrations, and security middleware.\n"
+            "Return only evidence-backed findings. If evidence is weak, note the uncertainty instead of inferring.\n"
+            "Prefer targeted glob, grep, and file reads over broad dumping.\n"
         ),
     }
 
@@ -224,8 +244,12 @@ def _normalize_report(report: PreReconReport, inputs: PrereconInputs) -> PreReco
             "repo_path": inputs.repo_path,
             "repo_root_validated": inputs.repo_root_validated,
             "repo_top_level_entries": sorted(set(report.repo_top_level_entries))[:50],
-            "framework_signals": sorted(set(report.framework_signals)),
-            "candidate_routes": sorted(set(report.candidate_routes))[:50],
+            "framework_signals": _dedupe_framework_signals(report.framework_signals),
+            "candidate_routes": _dedupe_candidate_routes(report.candidate_routes),
+            "auth_signals": _dedupe_auth_signals(report.auth_signals),
+            "schema_files": _dedupe_schema_files(report.schema_files),
+            "external_integrations": _dedupe_external_integrations(report.external_integrations),
+            "security_config": _dedupe_security_config(report.security_config),
             "scope_inputs": inputs.scope_inputs,
             "plan_inputs": inputs.plan_inputs,
             "warnings": sorted(set(report.warnings)),
@@ -238,3 +262,57 @@ def _canonical_url(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path or "/"
     return parsed._replace(path=path, params="", query="", fragment="").geturl()
+
+
+def _dedupe_framework_signals(items: list[FrameworkSignal]) -> list[FrameworkSignal]:
+    deduped = {
+        (item.name, item.evidence, item.evidence_level): item
+        for item in items
+    }
+    return sorted(deduped.values(), key=lambda item: (item.name, item.evidence, item.evidence_level))[:20]
+
+
+def _dedupe_candidate_routes(items: list[RouteSurface]) -> list[RouteSurface]:
+    deduped = {
+        (item.path, item.kind, item.scope_classification, item.evidence, item.evidence_level): item
+        for item in items
+    }
+    return sorted(
+        deduped.values(),
+        key=lambda item: (item.path, item.kind, item.scope_classification, item.evidence_level, item.evidence),
+    )[:50]
+
+
+def _dedupe_auth_signals(items: list[AuthSignal]) -> list[AuthSignal]:
+    deduped = {
+        (item.signal, item.location, item.evidence, item.evidence_level): item
+        for item in items
+    }
+    return sorted(deduped.values(), key=lambda item: (item.signal, item.location, item.evidence_level))[:30]
+
+
+def _dedupe_schema_files(items: list[SchemaFile]) -> list[SchemaFile]:
+    deduped = {
+        (item.path, item.schema_type, item.evidence_level): item
+        for item in items
+    }
+    return sorted(deduped.values(), key=lambda item: (item.path, item.schema_type, item.evidence_level))[:30]
+
+
+def _dedupe_external_integrations(items: list[ExternalIntegration]) -> list[ExternalIntegration]:
+    deduped = {
+        (item.name, item.location, item.kind, item.evidence, item.evidence_level): item
+        for item in items
+    }
+    return sorted(
+        deduped.values(),
+        key=lambda item: (item.name, item.location, item.kind, item.evidence_level),
+    )[:30]
+
+
+def _dedupe_security_config(items: list[SecurityConfigSignal]) -> list[SecurityConfigSignal]:
+    deduped = {
+        (item.signal, item.location, item.evidence, item.evidence_level): item
+        for item in items
+    }
+    return sorted(deduped.values(), key=lambda item: (item.signal, item.location, item.evidence_level))[:30]
