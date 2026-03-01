@@ -181,6 +181,12 @@ def _write_netdisc_artifacts(
     if not validate_network_discovery(network_discovery_path):
         raise ApplicationError("Invalid netdisc artifact generated.", type="invalid_netdisc_output", non_retryable=True)
 
+    from adversa.netdisc.reports import generate_netdisc_markdown
+
+    markdown_content = generate_netdisc_markdown(report)
+    markdown_path = phase_dir / "network_discovery.md"
+    markdown_path.write_text(markdown_content, encoding="utf-8")
+
     evidence_path = phase_dir / "evidence" / "baseline.json"
     evidence_path.write_text(
         json.dumps(
@@ -198,7 +204,7 @@ def _write_netdisc_artifacts(
         ),
         encoding="utf-8",
     )
-    return [network_discovery_path, evidence_path]
+    return [network_discovery_path, markdown_path, evidence_path]
 
 
 @activity.defn

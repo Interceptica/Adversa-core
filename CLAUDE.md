@@ -212,12 +212,12 @@ Each phase must emit schema-valid artifacts:
   - **Metadata**: `pre_recon.json` - Minimal workflow metadata (structured Pydantic validation)
   - **Evidence**: `evidence/baseline.json` - Framework signals, candidate routes, auth signals, vulnerability sinks, data flows
   - **Benefits**: ~40-60% token savings vs dual JSON+markdown format, human-readable/editable, table-formatted
-- **Network Discovery**: `network_discovery.json`, `coverage_netdisc.json`, evidence pack with:
-  - Subdomain enumeration (subfinder - passive)
-  - HTTP service fingerprinting (whatweb/httpx/curl)
-  - TLS/SSL certificate analysis (openssl)
-  - Optional port/service discovery (nmap - requires explicit opt-in)
-  - Scope-enforced host classification
+- **Network Discovery**: **Markdown-first** with:
+  - **Primary**: `network_discovery.md` - Pentester-friendly 5-section report (hosts, service fingerprints, TLS analysis, port services)
+  - **Metadata**: `network_discovery.json` - Minimal workflow metadata
+  - **Evidence**: `evidence/baseline.json` - Raw discovery data
+  - Tool coverage: subfinder (passive subdomain enum), httpx/curl (HTTP fingerprinting), openssl (TLS), nmap (active port scan - requires explicit opt-in)
+  - Scope-enforced host classification (in_scope / out_of_scope)
 - **Recon**: `system_map.json`, `attack_surface.json`, auth/authz/data-flow models
 - **Vulnerability**: `findings.json`, `risk_register.json`, analyzer evidence
 - **Reporting**: `report.md`, `exec_summary.md`, `retest_plan.json`, bundle index/metadata
