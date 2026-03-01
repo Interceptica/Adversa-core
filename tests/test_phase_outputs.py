@@ -4,11 +4,61 @@ import asyncio
 from pathlib import Path
 
 from adversa.artifacts.store import ArtifactStore
+from adversa.state.models import (
+    FrameworkSignal,
+    PreReconReport,
+    RouteSurface,
+    SecurityConfigSignal,
+)
 from adversa.state.models import PHASES
+from adversa.workflow_temporal import activities as workflow_activities
 from adversa.workflow_temporal.activities import run_phase_activity
 
 
-def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(tmp_path: Path) -> None:
+def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        workflow_activities,
+        "build_prerecon_report",
+        lambda **kwargs: PreReconReport(
+            target_url=kwargs["url"],
+            canonical_url=kwargs["url"],
+            host="example.com",
+            path="/",
+            repo_path=kwargs["repo_path"],
+            repo_root_validated=True,
+            repo_top_level_entries=["src"],
+            framework_signals=[
+                FrameworkSignal(name="nodejs_app", evidence="package.json", evidence_level="high")
+            ],
+            candidate_routes=[
+                RouteSurface(
+                    path="/",
+                    kind="page",
+                    scope_classification="in_scope",
+                    evidence="app/page.tsx",
+                    evidence_level="high",
+                )
+            ],
+            auth_signals=[],
+            schema_files=[],
+            external_integrations=[],
+            security_config=[
+                SecurityConfigSignal(
+                    signal="cors_enabled",
+                    location="middleware.ts",
+                    evidence="CORS middleware configuration",
+                    evidence_level="medium",
+                )
+            ],
+            scope_inputs={},
+            plan_inputs={},
+            warnings=[],
+            remediation_hints=[],
+        ),
+    )
     expected_phase_files = {
         "intake": {"output.json", "summary.md", "coverage.json", "scope.json", "plan.json", "coverage_intake.json"},
         "prerecon": {"output.json", "summary.md", "coverage.json", "pre_recon.json"},
@@ -33,7 +83,10 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(tmp_path
 
         phase_dir = tmp_path / "ws" / "run1" / phase
         assert expected_phase_files[phase].issubset({path.name for path in phase_dir.iterdir() if path.is_file()})
-        assert (phase_dir / "evidence" / "stub.txt").exists()
+        if phase == "prerecon":
+            assert (phase_dir / "evidence" / "baseline.json").exists()
+        else:
+            assert (phase_dir / "evidence" / "stub.txt").exists()
 
 
 def test_rerun_skips_valid_phase_outputs_unless_force(tmp_path: Path) -> None:

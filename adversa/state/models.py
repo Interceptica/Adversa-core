@@ -164,6 +164,115 @@ class IntakeCoverage(BaseModel):
     )
 
 
+class FrameworkSignal(BaseModel):
+    name: str = Field(description="Detected framework, runtime, or platform signal.")
+    evidence: str = Field(description="Concrete file or config evidence supporting this signal.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+
+
+class RouteSurface(BaseModel):
+    path: str = Field(description="Normalized candidate route or endpoint path.")
+    kind: str = Field(description="Route type such as page, api, graphql, websocket, admin, or health.")
+    scope_classification: Literal["in_scope", "out_of_scope"] = Field(
+        description="Whether this surface is network-reachable and relevant to downstream recon."
+    )
+    evidence: str = Field(description="Concrete evidence supporting the presence of this route or surface.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+
+
+class AuthSignal(BaseModel):
+    signal: str = Field(description="Authentication or session handling behavior identified during prerecon.")
+    location: str = Field(description="File or component location where the auth signal was found.")
+    evidence: str = Field(description="Concrete evidence supporting the auth finding.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+
+
+class SchemaFile(BaseModel):
+    path: str = Field(description="Repository-relative path to an API or data schema file.")
+    schema_type: str = Field(description="Schema type such as openapi, graphql, or json_schema.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level that this file is a schema relevant to attack-surface understanding."
+    )
+
+
+class ExternalIntegration(BaseModel):
+    name: str = Field(description="External integration or outbound dependency identified during prerecon.")
+    location: str = Field(description="File or component location where the integration was identified.")
+    kind: str = Field(description="Integration type such as webhook, api_client, url_fetcher, import_export, or third_party.")
+    evidence: str = Field(description="Concrete evidence supporting the integration finding.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+
+
+class SecurityConfigSignal(BaseModel):
+    signal: str = Field(description="Security-relevant middleware, config, or policy signal.")
+    location: str = Field(description="File or component location where the security configuration was found.")
+    evidence: str = Field(description="Concrete evidence supporting the security configuration finding.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on the quality of the supporting evidence."
+    )
+
+
+class PreReconReport(BaseModel):
+    target_url: str = Field(description="Authorized target URL evaluated during prerecon.")
+    canonical_url: str = Field(description="Normalized canonical URL used for prerecon baselining.")
+    host: str = Field(description="Normalized host extracted from the target URL.")
+    path: str = Field(description="Normalized path extracted from the target URL.")
+    repo_path: str = Field(description="Authorized repository path inspected during prerecon.")
+    repo_root_validated: bool = Field(description="Whether the repository path passed repo-root validation before inspection.")
+    repo_top_level_entries: list[str] = Field(
+        default_factory=list,
+        description="Deterministically sorted top-level files and directories discovered in the target repository.",
+    )
+    framework_signals: list[FrameworkSignal] = Field(
+        default_factory=list,
+        description="Detected framework and runtime signals inferred from repository files.",
+    )
+    candidate_routes: list[RouteSurface] = Field(
+        default_factory=list,
+        description="Potential application route paths inferred from repository and target inputs.",
+    )
+    auth_signals: list[AuthSignal] = Field(
+        default_factory=list,
+        description="Authentication and session handling signals relevant to downstream recon.",
+    )
+    schema_files: list[SchemaFile] = Field(
+        default_factory=list,
+        description="Discovered schema files that document the application's surface area.",
+    )
+    external_integrations: list[ExternalIntegration] = Field(
+        default_factory=list,
+        description="External integrations and outbound interactions that inform recon scope.",
+    )
+    security_config: list[SecurityConfigSignal] = Field(
+        default_factory=list,
+        description="Security middleware and policy signals relevant to safe recon planning.",
+    )
+    scope_inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Key normalized intake scope inputs consumed by prerecon.",
+    )
+    plan_inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Relevant planner expectations consumed by prerecon.",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Operator-facing prerecon warnings and confidence gaps that downstream recon should preserve.",
+    )
+    remediation_hints: list[str] = Field(
+        default_factory=list,
+        description="Actionable next steps when prerecon inputs are incomplete or weak.",
+    )
+
+
 class ArtifactEntry(BaseModel):
     path: str = Field(description="Run-relative path to a generated artifact file.")
     sha256: str = Field(description="SHA-256 digest of the artifact contents for reproducibility checks.")
@@ -241,6 +350,13 @@ def schema_export(target_dir: Path) -> None:
         RunPlan,
         ScopeContract,
         IntakeCoverage,
+        FrameworkSignal,
+        RouteSurface,
+        AuthSignal,
+        SchemaFile,
+        ExternalIntegration,
+        SecurityConfigSignal,
+        PreReconReport,
         ArtifactIndex,
         ManifestState,
         WorkflowInput,
