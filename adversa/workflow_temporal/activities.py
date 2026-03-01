@@ -106,10 +106,20 @@ def _write_prerecon_artifacts(
             type=classified.kind.value,
             non_retryable=classified.kind != LLMErrorKind.TRANSIENT,
         ) from exc
+    # Write JSON artifact (minimal metadata for workflow)
     pre_recon_path = phase_dir / "pre_recon.json"
     pre_recon_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     if not validate_pre_recon(pre_recon_path):
         raise ApplicationError("Invalid prerecon artifact generated.", type="invalid_prerecon_output", non_retryable=True)
+
+    # Write markdown artifact (primary deliverable for pentesters)
+    from adversa.prerecon.reports import generate_prerecon_markdown
+
+    markdown_content = generate_prerecon_markdown(report)
+    markdown_path = phase_dir / "pre_recon_analysis.md"
+    markdown_path.write_text(markdown_content, encoding="utf-8")
+
+    # Write evidence baseline
     evidence_path = phase_dir / "evidence" / "baseline.json"
     evidence_path.write_text(
         json.dumps(
@@ -131,7 +141,7 @@ def _write_prerecon_artifacts(
         ),
         encoding="utf-8",
     )
-    return [pre_recon_path, evidence_path]
+    return [pre_recon_path, markdown_path, evidence_path]
 
 
 def _write_netdisc_artifacts(
@@ -171,6 +181,12 @@ def _write_netdisc_artifacts(
     if not validate_network_discovery(network_discovery_path):
         raise ApplicationError("Invalid netdisc artifact generated.", type="invalid_netdisc_output", non_retryable=True)
 
+    from adversa.netdisc.reports import generate_netdisc_markdown
+
+    markdown_content = generate_netdisc_markdown(report)
+    markdown_path = phase_dir / "network_discovery.md"
+    markdown_path.write_text(markdown_content, encoding="utf-8")
+
     evidence_path = phase_dir / "evidence" / "baseline.json"
     evidence_path.write_text(
         json.dumps(
@@ -188,7 +204,7 @@ def _write_netdisc_artifacts(
         ),
         encoding="utf-8",
     )
-    return [network_discovery_path, evidence_path]
+    return [network_discovery_path, markdown_path, evidence_path]
 
 
 @activity.defn
