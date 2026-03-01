@@ -202,15 +202,16 @@ Signal definitions in `workflow_temporal/signals.py`.
 
 ## Phase Artifacts
 
+**Markdown-First Architecture**: Phases generate human-readable markdown reports as primary deliverables with minimal JSON for workflow metadata.
+
 Each phase must emit schema-valid artifacts:
 
 - **Intake**: `scope.json`, `plan.json`, `coverage_intake.json`
-- **Pre-Recon**: `pre_recon.json`, `coverage_prerecon.json`, evidence pack with:
-  - Framework signals, candidate routes, auth signals
-  - Vulnerability sinks (XSS, injection, SSRF, deserialization)
-  - Data flow patterns (sensitive data tracking)
-  - Schema files (OpenAPI, GraphQL)
-  - External integrations, security config
+- **Pre-Recon**: **Markdown-first** with:
+  - **Primary**: `pre_recon_analysis.md` - Pentester-friendly 10-section report (architecture, auth, data security, attack surface, vulnerability sinks, etc.)
+  - **Metadata**: `pre_recon.json` - Minimal workflow metadata (structured Pydantic validation)
+  - **Evidence**: `evidence/baseline.json` - Framework signals, candidate routes, auth signals, vulnerability sinks, data flows
+  - **Benefits**: ~40-60% token savings vs dual JSON+markdown format, human-readable/editable, table-formatted
 - **Network Discovery**: `network_discovery.json`, `coverage_netdisc.json`, evidence pack with:
   - Subdomain enumeration (subfinder - passive)
   - HTTP service fingerprinting (whatweb/httpx/curl)
@@ -220,6 +221,8 @@ Each phase must emit schema-valid artifacts:
 - **Recon**: `system_map.json`, `attack_surface.json`, auth/authz/data-flow models
 - **Vulnerability**: `findings.json`, `risk_register.json`, analyzer evidence
 - **Reporting**: `report.md`, `exec_summary.md`, `retest_plan.json`, bundle index/metadata
+
+**Downstream Consumption**: Phases can parse markdown artifacts using `adversa/utils/markdown.py` helpers (`parse_markdown_section`, `extract_tables_from_section`, `extract_file_paths_from_section`)
 
 ## Tech Stack
 
