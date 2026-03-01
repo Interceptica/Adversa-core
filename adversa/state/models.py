@@ -414,6 +414,8 @@ def schema_export(target_dir: Path) -> None:
         SchemaFile,
         ExternalIntegration,
         SecurityConfigSignal,
+        VulnerabilitySink,
+        DataFlowPattern,
         PreReconReport,
         ArtifactIndex,
         ManifestState,

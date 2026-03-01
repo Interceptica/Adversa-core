@@ -505,22 +505,58 @@ def _dedupe_security_config(items: list[SecurityConfigSignal]) -> list[SecurityC
 
 
 def _dedupe_vulnerability_sinks(items: list[VulnerabilitySink]) -> list[VulnerabilitySink]:
+    """
+    Deduplicate vulnerability sinks while preserving all meaningful fields.
+    
+    Two sinks are considered duplicates only if ALL significant fields match:
+    sink_type, location, context, input_sources, mitigation_present, evidence_level, scope_classification
+    """
     deduped = {
-        (item.sink_type, item.location, item.scope_classification, item.evidence_level): item
+        (
+            item.sink_type,
+            item.location,
+            item.context,
+            tuple(sorted(item.input_sources)),
+            item.mitigation_present,
+            item.evidence_level,
+            item.scope_classification,
+        ): item
         for item in items
     }
     return sorted(
         deduped.values(),
-        key=lambda item: (item.sink_type, item.scope_classification, item.evidence_level, item.location),
+        key=lambda item: (
+            item.scope_classification,  # in_scope first
+            item.sink_type,
+            item.evidence_level,  # high, medium, low
+            item.location,
+        ),
     )[:50]
 
 
 def _dedupe_data_flow_patterns(items: list[DataFlowPattern]) -> list[DataFlowPattern]:
+    """
+    Deduplicate data flow patterns while preserving compliance and storage metadata.
+    
+    Two patterns are considered duplicates only if ALL significant fields match:
+    data_type, sources, sinks, encryption_status, storage_locations, compliance_concerns
+    """
     deduped = {
-        (item.data_type, tuple(sorted(item.sources)), tuple(sorted(item.sinks)), item.encryption_status): item
+        (
+            item.data_type,
+            tuple(sorted(item.sources)),
+            tuple(sorted(item.sinks)),
+            item.encryption_status,
+            tuple(sorted(item.storage_locations)),
+            tuple(sorted(item.compliance_concerns)),
+        ): item
         for item in items
     }
     return sorted(
         deduped.values(),
-        key=lambda item: (item.data_type, item.encryption_status, item.evidence_level),
+        key=lambda item: (
+            item.data_type,
+            item.encryption_status,  # encrypted, plaintext, mixed, unknown
+            item.evidence_level,
+        ),
     )[:30]
