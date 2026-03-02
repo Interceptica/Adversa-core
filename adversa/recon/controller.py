@@ -24,7 +24,7 @@ from adversa.agent_runtime.middleware import (
 )
 from adversa.config.load import load_config
 from adversa.llm.providers import ProviderClient
-from adversa.recon.browser import playwright_tools_context
+from adversa.agent_runtime.browser import RECON_BROWSER_TOOLS, playwright_tools_context
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
 from adversa.state.models import ReconReport
 from adversa.utils.markdown import load_upstream_markdown
@@ -77,7 +77,7 @@ async def build_recon_report(
     )
     model = ProviderClient(cfg.provider).build_chat_model(temperature=0)
 
-    async with playwright_tools_context(headless=True) as browser_tools:
+    async with playwright_tools_context(allowed_tools=RECON_BROWSER_TOOLS, headless=True, run_id=run_id) as browser_tools:
         agent = create_deep_agent(
             model=model,
             tools=browser_tools,
