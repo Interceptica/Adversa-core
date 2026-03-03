@@ -144,7 +144,7 @@ def _write_prerecon_artifacts(
     return [pre_recon_path, markdown_path, evidence_path]
 
 
-def _write_netdisc_artifacts(
+async def _write_netdisc_artifacts(
     store: ArtifactStore,
     *,
     workspace_root: str,
@@ -160,7 +160,7 @@ def _write_netdisc_artifacts(
 
     phase_dir = store.phase_dir("netdisc")
     try:
-        report = build_network_discovery_report(
+        report = await build_network_discovery_report(
             workspace_root=workspace_root,
             workspace=workspace,
             run_id=run_id,
@@ -421,7 +421,7 @@ async def run_phase_activity(
         }
 
     if phase == "netdisc":
-        extra_files = _write_netdisc_artifacts(
+        extra_files = await _write_netdisc_artifacts(
             store,
             workspace_root=workspace_root,
             workspace=workspace,

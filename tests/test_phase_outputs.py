@@ -72,10 +72,8 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
         )
 
     monkeypatch.setattr(workflow_activities, "build_recon_report", _fake_recon)
-    monkeypatch.setattr(
-        netdisc_controller,
-        "build_network_discovery_report",
-        lambda **kwargs: NetworkDiscoveryReport(
+    async def _fake_netdisc(**kwargs):  # type: ignore[no-untyped-def]
+        return NetworkDiscoveryReport(
             target_url=kwargs["url"],
             canonical_url=kwargs["url"],
             host="example.com",
@@ -90,7 +88,12 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
             active_scanning_enabled=False,
             warnings=[],
             remediation_hints=[],
-        ),
+        )
+
+    monkeypatch.setattr(
+        netdisc_controller,
+        "build_network_discovery_report",
+        _fake_netdisc,
     )
     expected_phase_files = {
         "intake": {"output.json", "summary.md", "coverage.json", "scope.json", "plan.json", "coverage_intake.json"},

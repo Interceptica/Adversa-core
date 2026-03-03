@@ -4,6 +4,11 @@
 [tools]
 python = "3.11"
 node = "22"
+# Network discovery tools (managed via mise via aqua registry)
+# nmap, openssl, and whatweb are system packages — install via: brew install nmap openssl whatweb
+"aqua:projectdiscovery/subfinder" = "latest"
+"aqua:projectdiscovery/httpx" = "latest"
+"aqua:projectdiscovery/nuclei" = "latest"
 
 [env]
 _.file = ".env"
@@ -46,8 +51,3 @@ run = "python -m adversa init"
 description = "Start development environment (worker in background)"
 run = "python -m adversa.workflow_temporal.worker"
 
-# Optional: Network discovery tools (uncomment to manage via mise)
-# [tools]
-# nmap = "7.94"
-# subfinder = "latest"
-# httpx = "latest"
