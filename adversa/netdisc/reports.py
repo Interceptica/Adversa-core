@@ -19,14 +19,14 @@ def generate_netdisc_markdown(report: NetworkDiscoveryReport) -> str:
         Formatted markdown string suitable as a phase deliverable
     """
     sections = [
-        f"# Network Discovery Report",
-        f"",
+        "# Network Discovery Report",
+        "",
         f"**Target:** {report.target_url}",
         f"**Canonical URL:** {report.canonical_url}",
         f"**Host:** {report.host}",
         f"**Passive Discovery:** {'Enabled' if report.passive_discovery_enabled else 'Disabled'}",
         f"**Active Scanning:** {'Enabled' if report.active_scanning_enabled else 'Disabled (port scan skipped)'}",
-        f"",
+        "",
     ]
 
     sections.append(_generate_executive_summary(report))
@@ -53,8 +53,8 @@ def _generate_executive_summary(report: NetworkDiscoveryReport) -> str:
         return "\n".join(lines)
 
     lines += [
-        f"| Metric | Value |",
-        f"|--------|-------|",
+        "| Metric | Value |",
+        "|--------|-------|",
         f"| Hosts Discovered | {total} |",
         f"| In-Scope Hosts | {in_scope} |",
         f"| Out-of-Scope Hosts | {out_of_scope} |",

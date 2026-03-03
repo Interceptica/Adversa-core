@@ -9,6 +9,7 @@ from adversa.state.models import (
     NetworkDiscoveryReport,
     PhaseOutput,
     PreReconReport,
+    ReconReport,
     RunPlan,
     schema_export,
 )
@@ -55,6 +56,16 @@ def validate_network_discovery(path: Path) -> bool:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         NetworkDiscoveryReport.model_validate(payload)
+        return True
+    except Exception:
+        return False
+
+
+def validate_recon(path: Path) -> bool:
+    """Validate recon report artifact."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        ReconReport.model_validate(payload)
         return True
     except Exception:
         return False

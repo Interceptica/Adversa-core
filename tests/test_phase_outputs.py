@@ -61,10 +61,19 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
         ),
     )
     import adversa.netdisc.controller as netdisc_controller
-    monkeypatch.setattr(
-        netdisc_controller,
-        "build_network_discovery_report",
-        lambda **kwargs: NetworkDiscoveryReport(
+    from adversa.state.models import ReconReport
+
+    async def _fake_recon(**kwargs):  # type: ignore[no-untyped-def]
+        return ReconReport(
+            target_url=kwargs["url"],
+            canonical_url=kwargs["url"],
+            host="example.com",
+            path="/",
+        )
+
+    monkeypatch.setattr(workflow_activities, "build_recon_report", _fake_recon)
+    async def _fake_netdisc(**kwargs):  # type: ignore[no-untyped-def]
+        return NetworkDiscoveryReport(
             target_url=kwargs["url"],
             canonical_url=kwargs["url"],
             host="example.com",
@@ -79,13 +88,18 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
             active_scanning_enabled=False,
             warnings=[],
             remediation_hints=[],
-        ),
+        )
+
+    monkeypatch.setattr(
+        netdisc_controller,
+        "build_network_discovery_report",
+        _fake_netdisc,
     )
     expected_phase_files = {
         "intake": {"output.json", "summary.md", "coverage.json", "scope.json", "plan.json", "coverage_intake.json"},
         "prerecon": {"output.json", "summary.md", "coverage.json", "pre_recon.json"},
         "netdisc": {"output.json", "summary.md", "coverage.json", "network_discovery.json"},
-        "recon": {"output.json", "summary.md", "coverage.json", "system_map.json", "attack_surface.json"},
+        "recon": {"output.json", "summary.md", "coverage.json", "recon.json", "recon_analysis.md"},
         "vuln": {"output.json", "summary.md", "coverage.json", "findings.json", "risk_register.json"},
         "report": {"output.json", "summary.md", "coverage.json", "report.md", "exec_summary.md", "retest_plan.json"},
     }
@@ -106,7 +120,7 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
 
         phase_dir = tmp_path / "ws" / "run1" / phase
         assert expected_phase_files[phase].issubset({path.name for path in phase_dir.iterdir() if path.is_file()})
-        if phase in ("prerecon", "netdisc"):
+        if phase in ("prerecon", "netdisc", "recon"):
             assert (phase_dir / "evidence" / "baseline.json").exists()
         else:
             assert (phase_dir / "evidence" / "stub.txt").exists()

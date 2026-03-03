@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
 
 from adversa.netdisc.controller import (
     _classify_discovered_hosts,
@@ -14,7 +14,6 @@ from adversa.netdisc.controller import (
     _is_host_in_scope,
     build_network_discovery_report,
 )
-from adversa.netdisc.tools import HttpFingerprinter, SubfinderWrapper, TLSInspector, ToolConfig
 from adversa.state.models import (
     DiscoveredHost,
     NetworkDiscoveryReport,
@@ -24,8 +23,10 @@ from adversa.state.models import (
 )
 
 
+# ── Pydantic schema validation ────────────────────────────────────────────────
+
+
 def test_discovered_host_schema_validation() -> None:
-    """Test DiscoveredHost model validation."""
     host = DiscoveredHost(
         hostname="api.example.com",
         ip_addresses=["192.0.2.1"],
@@ -40,7 +41,6 @@ def test_discovered_host_schema_validation() -> None:
 
 
 def test_service_fingerprint_schema_validation() -> None:
-    """Test ServiceFingerprint model validation."""
     fp = ServiceFingerprint(
         url="https://example.com",
         http_status=200,
@@ -59,7 +59,6 @@ def test_service_fingerprint_schema_validation() -> None:
 
 
 def test_tls_observation_schema_validation() -> None:
-    """Test TLSObservation model validation."""
     obs = TLSObservation(
         hostname="example.com",
         port=443,
@@ -80,7 +79,6 @@ def test_tls_observation_schema_validation() -> None:
 
 
 def test_network_discovery_report_schema_validation() -> None:
-    """Test NetworkDiscoveryReport model validation."""
     report = NetworkDiscoveryReport(
         target_url="https://example.com",
         canonical_url="https://example.com",
@@ -102,9 +100,11 @@ def test_network_discovery_report_schema_validation() -> None:
     assert report.active_scanning_enabled is False
 
 
-def test_is_host_in_scope_allowed_hosts() -> None:
-    """Test scope classification for allowed hosts."""
-    scope = ScopeContract(
+# ── Scope classification helpers ──────────────────────────────────────────────
+
+
+def _make_scope(**kwargs: object) -> ScopeContract:
+    defaults: dict[str, object] = dict(
         target_url="https://example.com",
         repo_path="repos/example",
         workspace="test",
@@ -112,7 +112,7 @@ def test_is_host_in_scope_allowed_hosts() -> None:
         safe_mode=True,
         normalized_host="example.com",
         normalized_path="/",
-        allowed_hosts=["example.com", "api.example.com"],
+        allowed_hosts=[],
         allowed_subdomains=[],
         exclusions=[],
         capability_constraints=[],
@@ -123,34 +123,19 @@ def test_is_host_in_scope_allowed_hosts() -> None:
         confidence_gaps=[],
         warnings=[],
     )
+    defaults.update(kwargs)
+    return ScopeContract(**defaults)  # type: ignore[arg-type]
 
+
+def test_is_host_in_scope_allowed_hosts() -> None:
+    scope = _make_scope(allowed_hosts=["example.com", "api.example.com"])
     assert _is_host_in_scope("example.com", scope) is True
     assert _is_host_in_scope("api.example.com", scope) is True
     assert _is_host_in_scope("evil.com", scope) is False
 
 
 def test_is_host_in_scope_allowed_subdomains() -> None:
-    """Test scope classification for allowed subdomains."""
-    scope = ScopeContract(
-        target_url="https://example.com",
-        repo_path="repos/example",
-        workspace="test",
-        authorized=True,
-        safe_mode=True,
-        normalized_host="example.com",
-        normalized_path="/",
-        allowed_hosts=[],
-        allowed_subdomains=["example.com"],
-        exclusions=[],
-        capability_constraints=[],
-        repo_root_validated=True,
-        evidence_expectations=[],
-        notes=[],
-        rules_summary={},
-        confidence_gaps=[],
-        warnings=[],
-    )
-
+    scope = _make_scope(allowed_subdomains=["example.com"])
     assert _is_host_in_scope("example.com", scope) is True
     assert _is_host_in_scope("api.example.com", scope) is True
     assert _is_host_in_scope("www.api.example.com", scope) is True
@@ -158,27 +143,11 @@ def test_is_host_in_scope_allowed_subdomains() -> None:
 
 
 def test_is_host_in_scope_exclusions() -> None:
-    """Test scope classification with exclusions."""
-    scope = ScopeContract(
-        target_url="https://example.com",
-        repo_path="repos/example",
-        workspace="test",
-        authorized=True,
-        safe_mode=True,
-        normalized_host="example.com",
-        normalized_path="/",
+    scope = _make_scope(
         allowed_hosts=["example.com"],
         allowed_subdomains=["example.com"],
         exclusions=["admin.example.com", "staging"],
-        capability_constraints=[],
-        repo_root_validated=True,
-        evidence_expectations=[],
-        notes=[],
-        rules_summary={},
-        confidence_gaps=[],
-        warnings=[],
     )
-
     assert _is_host_in_scope("example.com", scope) is True
     assert _is_host_in_scope("admin.example.com", scope) is False
     assert _is_host_in_scope("staging.example.com", scope) is False
@@ -186,26 +155,7 @@ def test_is_host_in_scope_exclusions() -> None:
 
 
 def test_classify_discovered_hosts() -> None:
-    """Test host classification based on scope."""
-    scope = ScopeContract(
-        target_url="https://example.com",
-        repo_path="repos/example",
-        workspace="test",
-        authorized=True,
-        safe_mode=True,
-        normalized_host="example.com",
-        normalized_path="/",
-        allowed_hosts=["example.com"],
-        allowed_subdomains=["example.com"],
-        exclusions=[],
-        capability_constraints=[],
-        repo_root_validated=True,
-        evidence_expectations=[],
-        notes=[],
-        rules_summary={},
-        confidence_gaps=[],
-        warnings=[],
-    )
+    scope = _make_scope(allowed_hosts=["example.com"], allowed_subdomains=["example.com"])
 
     hosts = [
         DiscoveredHost(
@@ -231,8 +181,10 @@ def test_classify_discovered_hosts() -> None:
     assert classified[1].scope_classification == "out_of_scope"
 
 
+# ── Deduplication helpers ─────────────────────────────────────────────────────
+
+
 def test_dedupe_hosts() -> None:
-    """Test host deduplication."""
     hosts = [
         DiscoveredHost(
             hostname="example.com",
@@ -258,7 +210,6 @@ def test_dedupe_hosts() -> None:
 
 
 def test_dedupe_fingerprints() -> None:
-    """Test service fingerprint deduplication."""
     fingerprints = [
         ServiceFingerprint(
             url="https://example.com",
@@ -283,7 +234,6 @@ def test_dedupe_fingerprints() -> None:
 
 
 def test_dedupe_tls_observations() -> None:
-    """Test TLS observation deduplication."""
     observations = [
         TLSObservation(
             hostname="example.com",
@@ -303,33 +253,7 @@ def test_dedupe_tls_observations() -> None:
     assert len(deduped) == 1
 
 
-def test_subfinder_wrapper_tool_not_installed() -> None:
-    """Test SubfinderWrapper when tool is not installed."""
-    with patch("subprocess.run", side_effect=FileNotFoundError):
-        wrapper = SubfinderWrapper(ToolConfig(enabled=True))
-        result = wrapper.discover_subdomains("example.com")
-        assert result == []
-
-
-def test_subfinder_wrapper_disabled() -> None:
-    """Test SubfinderWrapper when disabled."""
-    wrapper = SubfinderWrapper(ToolConfig(enabled=False))
-    result = wrapper.discover_subdomains("example.com")
-    assert result == []
-
-
-def test_http_fingerprinter_disabled() -> None:
-    """Test HttpFingerprinter when disabled."""
-    fingerprinter = HttpFingerprinter(ToolConfig(enabled=False))
-    result = fingerprinter.fingerprint_service("https://example.com")
-    assert result is None
-
-
-def test_tls_inspector_disabled() -> None:
-    """Test TLSInspector when disabled."""
-    inspector = TLSInspector(ToolConfig(enabled=False))
-    result = inspector.inspect_tls("example.com")
-    assert result is None
+# ── Controller — stub path (passive disabled) ─────────────────────────────────
 
 
 @patch("adversa.netdisc.controller.load_config")
@@ -339,43 +263,57 @@ def test_build_network_discovery_report_passive_disabled(
     mock_load_config: MagicMock,
     tmp_path: Path,
 ) -> None:
-    """Test network discovery report when passive discovery is disabled."""
+    """Controller returns a stub when passive discovery is disabled — no agent runs."""
     mock_config = MagicMock()
     mock_config.safety.network_discovery_enabled = False
     mock_config.safety.active_scanning_enabled = False
     mock_load_config.return_value = mock_config
+    mock_load_scope.return_value = None  # not reached when discovery disabled
 
-    mock_scope = ScopeContract(
-        target_url="https://example.com",
-        repo_path="repos/example",
-        workspace="test",
-        authorized=True,
-        safe_mode=True,
-        normalized_host="example.com",
-        normalized_path="/",
-        allowed_hosts=["example.com"],
-        allowed_subdomains=[],
-        exclusions=[],
-        capability_constraints=[],
-        repo_root_validated=True,
-        evidence_expectations=[],
-        notes=[],
-        rules_summary={},
-        confidence_gaps=[],
-        warnings=[],
-    )
-    mock_load_scope.return_value = mock_scope
-
-    report = build_network_discovery_report(
-        workspace_root=str(tmp_path),
-        workspace="test",
-        run_id="run1",
-        repo_path="repos/example",
-        url="https://example.com",
-        config_path="adversa.toml",
+    report = asyncio.run(
+        build_network_discovery_report(
+            workspace_root=str(tmp_path),
+            workspace="test",
+            run_id="run1",
+            repo_path="repos/example",
+            url="https://example.com",
+            config_path="adversa.toml",
+        )
     )
 
     assert report.passive_discovery_enabled is False
     assert report.active_scanning_enabled is False
     assert len(report.warnings) > 0
     assert "disabled" in report.warnings[0].lower()
+    # Scope contract was never consulted
+    mock_load_scope.assert_not_called()
+
+
+@patch("adversa.netdisc.controller.load_config")
+@patch("adversa.netdisc.controller._load_scope_contract")
+def test_build_network_discovery_report_no_scope(
+    mock_load_scope: MagicMock,
+    mock_load_config: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Controller returns a stub when scope contract is missing."""
+    mock_config = MagicMock()
+    mock_config.safety.network_discovery_enabled = True
+    mock_config.safety.active_scanning_enabled = False
+    mock_load_config.return_value = mock_config
+    mock_load_scope.return_value = None  # scope not found
+
+    report = asyncio.run(
+        build_network_discovery_report(
+            workspace_root=str(tmp_path),
+            workspace="test",
+            run_id="run1",
+            repo_path="repos/example",
+            url="https://example.com",
+            config_path="adversa.toml",
+        )
+    )
+
+    assert report.passive_discovery_enabled is True
+    assert len(report.warnings) > 0
+    assert "scope contract" in report.warnings[0].lower()
