@@ -17,10 +17,11 @@ from adversa.llm.providers import ProviderClient
 from adversa.logging.audit import AuditLogger
 from adversa.prerecon.controller import build_prerecon_report
 from adversa.recon.controller import build_recon_report
+from adversa.vuln.controller import build_vuln_report
 from adversa.security.rule_compiler import compile_rules
 from adversa.security.rules import RuntimeTarget, evaluate_rules
 from adversa.state.models import EvidenceRef, ManifestState, PhaseOutput
-from adversa.state.schemas import validate_phase_output, validate_pre_recon, validate_recon
+from adversa.state.schemas import validate_phase_output, validate_pre_recon, validate_recon, validate_vuln
 
 
 PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, object]] = {
@@ -270,6 +271,81 @@ async def _write_recon_artifacts(
     return [recon_path, markdown_path, evidence_path]
 
 
+async def _write_vuln_artifacts(
+    store: ArtifactStore,
+    *,
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    repo_path: str,
+    url: str,
+    effective_config_path: str,
+) -> list[Path]:
+    """Write vulnerability analysis artifacts for the vuln phase."""
+    from adversa.vuln.reports import generate_vuln_markdown
+
+    phase_dir = store.phase_dir("vuln")
+    try:
+        report = await build_vuln_report(
+            workspace_root=workspace_root,
+            workspace=workspace,
+            run_id=run_id,
+            repo_path=repo_path,
+            url=url,
+            config_path=effective_config_path,
+        )
+    except Exception as exc:
+        classified = classify_provider_error(exc)
+        raise ApplicationError(
+            str(classified),
+            type=classified.kind.value,
+            non_retryable=classified.kind != LLMErrorKind.TRANSIENT,
+        ) from exc
+
+    findings_path = phase_dir / "findings.json"
+    findings_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    if not validate_vuln(findings_path):
+        raise ApplicationError("Invalid vuln artifact generated.", type="invalid_vuln_output", non_retryable=True)
+
+    markdown_content = generate_vuln_markdown(report)
+    markdown_path = phase_dir / "vuln_analysis.md"
+    markdown_path.write_text(markdown_content, encoding="utf-8")
+
+    all_findings = report.all_findings
+    risk_register = {
+        "critical": [f.model_dump(mode="json") for f in all_findings if f.severity == "critical"],
+        "high": [f.model_dump(mode="json") for f in all_findings if f.severity == "high"],
+        "medium": [f.model_dump(mode="json") for f in all_findings if f.severity == "medium"],
+        "low": [f.model_dump(mode="json") for f in all_findings if f.severity == "low"],
+        "info": [f.model_dump(mode="json") for f in all_findings if f.severity == "info"],
+    }
+    risk_path = phase_dir / "risk_register.json"
+    risk_path.write_text(json.dumps(risk_register, indent=2), encoding="utf-8")
+
+    evidence_path = phase_dir / "evidence" / "baseline.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "target_url": report.target_url,
+                "canonical_url": report.canonical_url,
+                "findings": [f.model_dump(mode="json") for f in all_findings],
+                "secure_vectors": {
+                    "injection": report.injection.secure_vectors,
+                    "xss": report.xss.secure_vectors,
+                    "ssrf": report.ssrf.secure_vectors,
+                    "auth": report.auth.secure_vectors,
+                    "authz": report.authz.secure_vectors,
+                },
+                "scope_inputs": report.scope_inputs,
+                "plan_inputs": report.plan_inputs,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return [findings_path, markdown_path, risk_path, evidence_path]
+
+
 @activity.defn
 async def run_phase_activity(
     workspace_root: str,
@@ -499,6 +575,56 @@ async def run_phase_activity(
             "warnings": recon_payload["warnings"],
         }
 
+    if phase == "vuln":
+        extra_files = await _write_vuln_artifacts(
+            store,
+            workspace_root=workspace_root,
+            workspace=workspace,
+            run_id=run_id,
+            repo_path=repo_path,
+            url=url,
+            effective_config_path=effective_config_path,
+        )
+        vuln_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
+        all_findings = (
+            vuln_payload.get("injection", {}).get("findings", [])
+            + vuln_payload.get("xss", {}).get("findings", [])
+            + vuln_payload.get("ssrf", {}).get("findings", [])
+            + vuln_payload.get("auth", {}).get("findings", [])
+            + vuln_payload.get("authz", {}).get("findings", [])
+        )
+        critical_count = sum(1 for f in all_findings if f.get("severity") == "critical")
+        high_count = sum(1 for f in all_findings if f.get("severity") == "high")
+        phase_summary = (
+            f"Found {len(all_findings)} findings across 5 analyzers "
+            f"({critical_count} critical, {high_count} high)."
+        )
+        phase_data["agent_runtime"] = {
+            "status": "completed",
+            "agent_name": "adversa-vuln",
+            "middleware": agent_execution.middleware,
+            "executed": True,
+            "runner": "deepagents-parallel",
+        }
+        evidence = [
+            EvidenceRef(
+                id="vuln-baseline",
+                path="vuln/evidence/baseline.json",
+                note="Vulnerability analysis baseline with all findings and secure vectors.",
+            )
+        ]
+        phase_data["vuln"] = {
+            "injection_count": len(vuln_payload.get("injection", {}).get("findings", [])),
+            "xss_count": len(vuln_payload.get("xss", {}).get("findings", [])),
+            "ssrf_count": len(vuln_payload.get("ssrf", {}).get("findings", [])),
+            "auth_count": len(vuln_payload.get("auth", {}).get("findings", [])),
+            "authz_count": len(vuln_payload.get("authz", {}).get("findings", [])),
+            "total_findings": len(all_findings),
+            "critical_count": critical_count,
+            "high_count": high_count,
+            "warnings": vuln_payload.get("warnings", []),
+        }
+
     output = PhaseOutput(
         phase=phase,
         summary=phase_summary,
@@ -586,7 +712,37 @@ async def run_phase_activity(
             encoding="utf-8",
         )
 
-    _REAL_PHASES = ("prerecon", "netdisc", "recon")
+    if phase == "vuln":
+        vuln_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
+        _all = (
+            vuln_payload.get("injection", {}).get("findings", [])
+            + vuln_payload.get("xss", {}).get("findings", [])
+            + vuln_payload.get("ssrf", {}).get("findings", [])
+            + vuln_payload.get("auth", {}).get("findings", [])
+            + vuln_payload.get("authz", {}).get("findings", [])
+        )
+        files["coverage"].write_text(
+            json.dumps(
+                {
+                    "phase": "vuln",
+                    "status": "complete",
+                    "injection_count": len(vuln_payload.get("injection", {}).get("findings", [])),
+                    "xss_count": len(vuln_payload.get("xss", {}).get("findings", [])),
+                    "ssrf_count": len(vuln_payload.get("ssrf", {}).get("findings", [])),
+                    "auth_count": len(vuln_payload.get("auth", {}).get("findings", [])),
+                    "authz_count": len(vuln_payload.get("authz", {}).get("findings", [])),
+                    "total_findings": len(_all),
+                    "critical_count": sum(1 for f in _all if f.get("severity") == "critical"),
+                    "high_count": sum(1 for f in _all if f.get("severity") == "high"),
+                    "externally_exploitable_count": sum(1 for f in _all if f.get("externally_exploitable")),
+                    "warnings": vuln_payload.get("warnings", []),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    _REAL_PHASES = ("prerecon", "netdisc", "recon", "vuln")
     evidence_path = store.phase_dir(phase) / "evidence" / "stub.txt"
     if phase not in _REAL_PHASES:
         evidence_path.write_text("evidence", encoding="utf-8")

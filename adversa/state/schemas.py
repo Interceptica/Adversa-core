@@ -11,6 +11,7 @@ from adversa.state.models import (
     PreReconReport,
     ReconReport,
     RunPlan,
+    VulnReport,
     schema_export,
 )
 
@@ -66,6 +67,16 @@ def validate_recon(path: Path) -> bool:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         ReconReport.model_validate(payload)
+        return True
+    except Exception:
+        return False
+
+
+def validate_vuln(path: Path) -> bool:
+    """Validate vulnerability analysis report artifact."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        VulnReport.model_validate(payload)
         return True
     except Exception:
         return False

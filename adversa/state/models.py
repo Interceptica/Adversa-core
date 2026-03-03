@@ -597,6 +597,126 @@ class ReconReport(BaseModel):
     )
 
 
+class VulnerabilityFinding(BaseModel):
+    id: str = Field(description="Stable finding identifier, e.g. 'INJ-001', 'XSS-003'.")
+    vuln_type: str = Field(
+        description="Vulnerability type: sql_injection, reflected_xss, stored_xss, dom_xss, ssrf, idor, "
+        "broken_auth, session_fixation, command_injection, template_injection, path_traversal, xxe, etc."
+    )
+    analyzer: Literal["injection", "xss", "ssrf", "auth", "authz"] = Field(
+        description="Which parallel analyzer produced this finding."
+    )
+    severity: Literal["critical", "high", "medium", "low", "info"] = Field(
+        description="Finding severity based on impact and exploitability."
+    )
+    confidence: Literal["high", "medium", "low"] = Field(
+        description="Confidence in the finding based on evidence quality."
+    )
+    cvss_score: float | None = Field(
+        default=None, description="CVSS 3.1 base score if calculable, otherwise null."
+    )
+    externally_exploitable: bool = Field(
+        description="Whether this finding is directly exploitable from an external attacker context. "
+        "Gates the future exploit-agent tier."
+    )
+    endpoint: str = Field(description="Affected endpoint path, e.g. '/api/users/{id}'.")
+    method: str | None = Field(default=None, description="HTTP method, e.g. 'GET', 'POST'.")
+    parameter: str | None = Field(default=None, description="Affected parameter or field name, e.g. 'user_id', 'url'.")
+    source_location: str | None = Field(
+        default=None, description="File and line where untrusted input originates, e.g. 'src/routes/users.py:45'."
+    )
+    sink_location: str | None = Field(
+        default=None, description="File and line of the dangerous sink, e.g. 'src/db/queries.py:12'."
+    )
+    description: str = Field(description="Clear description of the vulnerability and its impact.")
+    evidence: str = Field(description="Code snippet or reasoning supporting the finding.")
+    remediation: str = Field(description="Actionable remediation guidance.")
+    evidence_level: Literal["high", "medium", "low"] = Field(
+        description="Evidence quality: HIGH = code-backed with file:line, MEDIUM = pattern-inferred, LOW = speculative."
+    )
+
+
+class AnalyzerReport(BaseModel):
+    analyzer: Literal["injection", "xss", "ssrf", "auth", "authz"] = Field(
+        description="Analyzer type that produced this report."
+    )
+    findings: list[VulnerabilityFinding] = Field(
+        default_factory=list,
+        description="Vulnerability findings produced by this analyzer.",
+    )
+    dominant_patterns: list[str] = Field(
+        default_factory=list,
+        description="Named vulnerability patterns, e.g. 'Pattern 1: Missing rate limiting on /api/login'.",
+    )
+    strategic_context: str = Field(
+        default="",
+        description="Architecture-level context relevant to exploitation: session management gaps, "
+        "middleware architecture, role model, rate limiting, password storage, etc.",
+    )
+    secure_vectors: list[str] = Field(
+        default_factory=list,
+        description="Confirmed-safe paths or endpoints that do not require re-testing.",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Analysis limitations, untraced components, or assumptions that affect confidence.",
+    )
+
+
+class VulnReport(BaseModel):
+    target_url: str = Field(description="Authorized target URL for this vulnerability analysis run.")
+    canonical_url: str = Field(description="Normalized canonical URL.")
+    host: str = Field(description="Normalized host extracted from the target URL.")
+    path: str = Field(description="Normalized path extracted from the target URL.")
+    injection: AnalyzerReport = Field(
+        default_factory=lambda: AnalyzerReport(analyzer="injection"),
+        description="Injection analyzer report (SQL, command, template injection).",
+    )
+    xss: AnalyzerReport = Field(
+        default_factory=lambda: AnalyzerReport(analyzer="xss"),
+        description="XSS analyzer report (reflected, stored, DOM).",
+    )
+    ssrf: AnalyzerReport = Field(
+        default_factory=lambda: AnalyzerReport(analyzer="ssrf"),
+        description="SSRF analyzer report.",
+    )
+    auth: AnalyzerReport = Field(
+        default_factory=lambda: AnalyzerReport(analyzer="auth"),
+        description="Broken auth and session management analyzer report.",
+    )
+    authz: AnalyzerReport = Field(
+        default_factory=lambda: AnalyzerReport(analyzer="authz"),
+        description="Authorization (IDOR, privilege escalation) analyzer report.",
+    )
+    scope_inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Key normalized intake scope inputs consumed by the vuln phase.",
+    )
+    plan_inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Relevant planner expectations consumed by the vuln phase.",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Cross-analyzer warnings and analysis limitations.",
+    )
+    remediation_hints: list[str] = Field(
+        default_factory=list,
+        description="Cross-cutting remediation priorities.",
+    )
+
+    @property
+    def all_findings(self) -> list[VulnerabilityFinding]:
+        """Aggregate findings across all 5 analyzers."""
+        return (
+            self.injection.findings
+            + self.xss.findings
+            + self.ssrf.findings
+            + self.auth.findings
+            + self.authz.findings
+        )
+
+
 class ArtifactEntry(BaseModel):
     path: str = Field(description="Run-relative path to a generated artifact file.")
     sha256: str = Field(description="SHA-256 digest of the artifact contents for reproducibility checks.")
@@ -696,6 +816,9 @@ def schema_export(target_dir: Path) -> None:
         PrivilegeRole,
         AuthzCandidate,
         ReconReport,
+        VulnerabilityFinding,
+        AnalyzerReport,
+        VulnReport,
         ArtifactIndex,
         ManifestState,
         WorkflowInput,

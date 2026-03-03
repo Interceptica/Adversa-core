@@ -12,6 +12,7 @@ from adversa.workflow_temporal.activities import run_phase_activity
 
 
 PHASE_ACTIVITY_TIMEOUT = timedelta(minutes=10)
+VULN_PHASE_ACTIVITY_TIMEOUT = timedelta(minutes=30)
 PHASE_ACTIVITY_RETRY_POLICY = RetryPolicy(
     initial_interval=timedelta(seconds=2),
     backoff_coefficient=2.0,
@@ -110,6 +111,7 @@ class AdversaRunWorkflow:
                     break
 
                 try:
+                    timeout = VULN_PHASE_ACTIVITY_TIMEOUT if phase == "vuln" else PHASE_ACTIVITY_TIMEOUT
                     result = await workflow.execute_activity(
                         run_phase_activity,
                         inp.workspace,
@@ -120,7 +122,7 @@ class AdversaRunWorkflow:
                         phase,
                         inp.force,
                         inp.effective_config_path,
-                        start_to_close_timeout=PHASE_ACTIVITY_TIMEOUT,
+                        start_to_close_timeout=timeout,
                         retry_policy=PHASE_ACTIVITY_RETRY_POLICY,
                     )
                     if result.get("status") in {"completed", "skipped"}:
