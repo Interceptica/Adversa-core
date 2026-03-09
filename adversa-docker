@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+# adversa-docker — CLI wrapper for running Adversa via Docker Compose
+# Modelled on Shannon (KeygraphHQ/shannon) for UX consistency.
+
+set -e
+
+# Prevent MSYS from converting Unix paths on Windows
+case "$OSTYPE" in
+  msys*) export MSYS_NO_PATHCONV=1 ;;
+esac
+
+# Resolve the real path of this script (follows symlinks on macOS and Linux)
+_SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "${_SCRIPT_PATH}" ]; do
+  _LINK="$(readlink "${_SCRIPT_PATH}")"
+  [[ "${_LINK}" = /* ]] || _LINK="$(dirname "${_SCRIPT_PATH}")/${_LINK}"
+  _SCRIPT_PATH="${_LINK}"
+done
+SCRIPT_DIR="$(cd "$(dirname "${_SCRIPT_PATH}")" && pwd)"
+unset _SCRIPT_PATH _LINK
+COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+RUNS_DIR="${SCRIPT_DIR}/runs"
+REPOS_DIR="${SCRIPT_DIR}/repos"
+
+# Load .env if present
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${SCRIPT_DIR}/.env"
+  set +a
+fi
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+_red()    { printf '\033[0;31m%s\033[0m\n' "$*"; }
+_green()  { printf '\033[0;32m%s\033[0m\n' "$*"; }
+_yellow() { printf '\033[0;33m%s\033[0m\n' "$*"; }
+_bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
+_die()    { _red "ERROR: $*" >&2; exit 1; }
+
+# Parse KEY=VALUE positional arguments into shell variables
+parse_args() {
+  for arg in "$@"; do
+    case "$arg" in
+      URL=*)       URL="${arg#URL=}"       ;;
+      REPO=*)      REPO="${arg#REPO=}"     ;;
+      WORKSPACE=*) WORKSPACE="${arg#WORKSPACE=}" ;;
+      ID=*)        ID="${arg#ID=}"         ;;
+      CLEAN=*)     CLEAN="${arg#CLEAN=}"   ;;
+      REBUILD=*)   REBUILD="${arg#REBUILD=}" ;;
+      FOLLOW=*)    FOLLOW="${arg#FOLLOW=}" ;;
+    esac
+  done
+}
+
+is_temporal_ready() {
+  # Check the Docker health status of the temporal container directly —
+  # avoids exec'ing into the container (auto-setup image has tctl, not the temporal CLI).
+  local container_id
+  container_id=$(docker compose -f "${COMPOSE_FILE}" ps -q temporal 2>/dev/null)
+  [ -n "${container_id}" ] || return 1
+  docker inspect --format='{{.State.Health.Status}}' "${container_id}" 2>/dev/null | grep -q "healthy"
+}
+
+ensure_containers() {
+  if is_temporal_ready 2>/dev/null; then
+    return 0
+  fi
+
+  echo "Starting Adversa stack..."
+  if [ "${REBUILD:-}" = "true" ]; then
+    docker compose -f "${COMPOSE_FILE}" build --no-cache adversa
+  fi
+  docker compose -f "${COMPOSE_FILE}" up -d
+
+  echo "Waiting for Temporal to be ready..."
+  for i in $(seq 1 30); do
+    if is_temporal_ready 2>/dev/null; then
+      _green "Temporal is ready."
+      return 0
+    fi
+    if [ "$i" -eq 30 ]; then
+      _die "Temporal did not become healthy. Check: docker compose logs temporal"
+    fi
+    sleep 3
+    printf '.'
+  done
+  printf '\n'
+}
+
+# Rewrite localhost → host.docker.internal for Docker networking
+rewrite_url() {
+  echo "$1" | sed 's|localhost|host.docker.internal|g' | sed 's|127\.0\.0\.1|host.docker.internal|g'
+}
+
+# Derive a clean slug from a URL for auto-naming workspaces
+url_slug() {
+  echo "$1" \
+    | sed 's|https\?://||' \
+    | sed 's|[^a-zA-Z0-9]|-|g' \
+    | sed 's|-\+|-|g' \
+    | sed 's|-$||' \
+    | cut -c1-40 \
+    | tr '[:upper:]' '[:lower:]'
+}
+
+show_help() {
+  cat << 'EOF'
+
+    _    
+   / \   __| |_   _____ _ __ ___  __ _      
+  / _ \ / _` \ \ / / _ \ '__/ __|/ _` |   
+ / ___ \ (_| |\ V /  __/ |  \__ \ (_| |    
+/_/   \_\__,_| \_/ \___|_|  |___/\__,_|     
+  AI Penetration Testing Framework
+
+USAGE
+  adversa-docker <command> [KEY=VALUE ...]
+
+COMMANDS
+  start   URL=<url> REPO=<name> [WORKSPACE=<name>] [REBUILD=true]
+            Start a scan (auto-resumes if WORKSPACE already exists)
+  workspaces
+            List all workspaces and their status
+  logs    ID=<workspace> [FOLLOW=true]
+            Show logs for a workspace
+  stop    [CLEAN=true]
+            Stop all containers (CLEAN=true also removes volumes)
+  build
+            Build the adversa Docker image
+  shell
+            Open an interactive shell in the adversa container
+  help
+            Show this message
+
+EXAMPLES
+  # Start with an auto-generated workspace name
+  adversa-docker start URL=https://example.com REPO=my-repo
+
+  # Start with a named workspace
+  adversa-docker start URL=https://example.com REPO=my-repo WORKSPACE=q1-audit
+
+  # Resume the same workspace (skips completed phases)
+  adversa-docker start URL=https://example.com REPO=my-repo WORKSPACE=q1-audit
+
+  # Resume an auto-named workspace from a previous run
+  adversa-docker start URL=https://example.com REPO=my-repo WORKSPACE=example-com_adversa-1771007534808
+
+  # List all workspaces
+  adversa-docker workspaces
+
+  # Tail logs for a workspace
+  adversa-docker logs ID=q1-audit FOLLOW=true
+
+  # Stop all containers
+  adversa-docker stop
+
+  # Stop and remove all data (volumes)
+  adversa-docker stop CLEAN=true
+
+NOTES
+  - localhost is automatically rewritten to host.docker.internal
+  - Temporal UI: http://localhost:8080
+  - Artifacts: ./runs/<workspace>/<run_id>/
+
+EOF
+}
+
+# ─── Commands ────────────────────────────────────────────────────────────────
+
+cmd_start() {
+  parse_args "$@"
+
+  [ -n "${URL:-}"  ] || _die "URL is required.  Usage: adversa-docker start URL=<url> REPO=<name>"
+  [ -n "${REPO:-}" ] || _die "REPO is required. Usage: adversa-docker start URL=<url> REPO=<name>"
+
+  # Validate API key
+  local found_key=0
+  for key in NOVITA_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY; do
+    if [ -n "${!key:-}" ]; then
+      found_key=1; break
+    fi
+  done
+  if [ "${found_key}" -eq 0 ]; then
+    _die "No provider API key set. Add NOVITA_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY to .env"
+  fi
+
+  # Validate repo directory
+  [ -d "${REPOS_DIR}/${REPO}" ] || \
+    _die "Repository not found at ./repos/${REPO}\nPlace your target repository under the ./repos/ directory."
+
+  # Rewrite localhost URLs
+  local original_url="${URL}"
+  URL="$(rewrite_url "${URL}")"
+  if [ "${URL}" != "${original_url}" ]; then
+    _yellow "URL rewritten for Docker: ${original_url} → ${URL}"
+  fi
+
+  # Auto-generate workspace name if not provided
+  if [ -z "${WORKSPACE:-}" ]; then
+    local slug
+    slug="$(url_slug "${original_url}")"
+    WORKSPACE="${slug}_adversa-$(date +%s%3N 2>/dev/null || date +%s)000"
+    _yellow "Auto-generated workspace: ${WORKSPACE}"
+  else
+    # Check if this workspace already exists → resume mode
+    if [ -d "${RUNS_DIR}/${WORKSPACE}" ]; then
+      _yellow "Workspace '${WORKSPACE}' already exists — resuming..."
+    fi
+  fi
+
+  mkdir -p "${RUNS_DIR}" "${SCRIPT_DIR}/logs"
+
+  ensure_containers
+
+  _bold "Submitting scan..."
+  _yellow "  URL:       ${URL}"
+  _yellow "  Repo:      ${REPO}"
+  _yellow "  Workspace: ${WORKSPACE}"
+  echo ""
+
+  docker compose -f "${COMPOSE_FILE}" exec -T adversa \
+    uv run python -m adversa run \
+      --repo "repos/${REPO}" \
+      --url "${URL}" \
+      --workspace "${WORKSPACE}" \
+      --i-acknowledge
+
+  echo ""
+  _green "Scan submitted. Workflow is running."
+  _green "Temporal UI: http://localhost:8080"
+  echo ""
+  _bold "Follow logs:"
+  echo "  adversa-docker logs ID=${WORKSPACE} FOLLOW=true"
+  _bold "Check status:"
+  echo "  adversa-docker workspaces"
+}
+
+cmd_workspaces() {
+  if [ ! -d "${RUNS_DIR}" ] || [ -z "$(ls -A "${RUNS_DIR}" 2>/dev/null)" ]; then
+    echo "No workspaces found. Run: adversa-docker start URL=... REPO=..."
+    return
+  fi
+
+  _bold "Workspaces:"
+  printf "  %-30s  %-10s  %-12s  %-8s  %s\n" "WORKSPACE" "RUN ID" "STATUS" "COMPLETED" "WORKFLOW ID"
+  printf "  %-30s  %-10s  %-12s  %-8s  %s\n" "──────────────────────────────" "──────────" "────────────" "────────" "──────────────────────────────────────"
+
+  for ws_dir in "${RUNS_DIR}"/*/; do
+    [ -d "${ws_dir}" ] || continue
+    local ws_name
+    ws_name="$(basename "${ws_dir}")"
+
+    # Find the most recent run (last alphabetically = last by run_id timestamp)
+    local latest_run="" manifest_file=""
+    for run_dir in "${ws_dir}"/*/; do
+      [ -d "${run_dir}" ] || continue
+      if [ -f "${run_dir}/artifacts/manifest.json" ]; then
+        latest_run="$(basename "${run_dir}")"
+        manifest_file="${run_dir}/artifacts/manifest.json"
+      fi
+    done
+
+    if [ -z "${manifest_file}" ]; then
+      printf "  %-30s  %-10s  %-12s  %-8s  %s\n" "${ws_name}" "-" "no-manifest" "-" "-"
+      continue
+    fi
+
+    # Derive status and phase info from the fields that actually exist in the manifest
+    local info
+    info="$(python3 -c "
+import json
+d = json.load(open('${manifest_file}'))
+canceled  = d.get('canceled', False)
+paused    = d.get('paused', False)
+waiting   = d.get('waiting_for_config', False)
+error     = d.get('last_error')
+completed = d.get('completed_phases', [])
+
+if canceled:
+    status = 'canceled'
+elif error:
+    status = 'failed'
+elif paused:
+    status = 'paused'
+elif waiting:
+    status = 'waiting-cfg'
+else:
+    status = 'running'
+
+print(status + '|' + ','.join(completed) + '|' + d.get('workflow_id',''))
+" 2>/dev/null || echo "unknown|-|-")"
+
+    local status completed_phases workflow_id
+    status="${info%%|*}"; info="${info#*|}"
+    completed_phases="${info%%|*}"
+    workflow_id="${info#*|}"
+
+    printf "  %-30s  %-10s  %-12s  %-8s  %s\n" \
+      "${ws_name}" "${latest_run:0:10}" "${status}" "${completed_phases:-none}" "${workflow_id}"
+  done
+}
+
+cmd_logs() {
+  parse_args "$@"
+  [ -n "${ID:-}" ] || _die "ID is required. Usage: adversa-docker logs ID=<workspace>"
+
+  local log_file=""
+
+  # Look for a log file in the most recent run of the workspace.
+  # Actual log files: agent_events.jsonl, tool_calls.jsonl, run.jsonl, workflow.log
+  if [ -d "${RUNS_DIR}/${ID}" ]; then
+    for run_dir in "${RUNS_DIR}/${ID}"/*/; do
+      [ -d "${run_dir}" ] || continue
+      for candidate in \
+          "${run_dir}/logs/agent_events.jsonl" \
+          "${run_dir}/logs/tool_calls.jsonl" \
+          "${run_dir}/logs/run.jsonl" \
+          "${run_dir}/logs/workflow.log"; do
+        [ -f "${candidate}" ] && log_file="${candidate}"
+      done
+    done
+  fi
+
+  if [ -z "${log_file}" ]; then
+    _die "No log file found for workspace '${ID}'.\nCheck: adversa-docker workspaces"
+  fi
+
+  echo "Log: ${log_file}"
+  if [ "${FOLLOW:-}" = "true" ]; then
+    tail -f "${log_file}"
+  else
+    tail -100 "${log_file}"
+  fi
+}
+
+cmd_stop() {
+  parse_args "$@"
+  _bold "Stopping Adversa stack..."
+  if [ "${CLEAN:-}" = "true" ]; then
+    docker compose -f "${COMPOSE_FILE}" down -v
+    _green "Stack stopped and volumes removed."
+  else
+    docker compose -f "${COMPOSE_FILE}" down
+    _green "Stack stopped. Artifacts preserved in ./runs/"
+  fi
+}
+
+cmd_build() {
+  _bold "Building adversa Docker image..."
+  docker compose -f "${COMPOSE_FILE}" build adversa
+  # Force-recreate the running container so it picks up the new image
+  if docker compose -f "${COMPOSE_FILE}" ps adversa --status running 2>/dev/null | grep -q adversa; then
+    _yellow "Recreating adversa container with new image..."
+    docker compose -f "${COMPOSE_FILE}" up -d --force-recreate --no-deps adversa
+  fi
+  _green "Build complete."
+}
+
+cmd_shell() {
+  ensure_containers
+  _bold "Opening shell in adversa container..."
+  docker compose -f "${COMPOSE_FILE}" exec adversa bash
+}
+
+# ─── Dispatch ────────────────────────────────────────────────────────────────
+case "${1:-help}" in
+  start)      shift; cmd_start      "$@" ;;
+  workspaces) shift; cmd_workspaces      ;;
+  logs)       shift; cmd_logs       "$@" ;;
+  stop)       shift; cmd_stop       "$@" ;;
+  build)      shift; cmd_build           ;;
+  shell)      shift; cmd_shell           ;;
+  help|--help|-h|*) show_help       ;;
+esac

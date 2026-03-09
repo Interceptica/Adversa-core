@@ -10,7 +10,8 @@ from adversa.workflow_temporal.workflows import AdversaRunWorkflow, WorkflowEngi
 
 def _payload() -> dict:
     return {
-        "workspace": "runs/ws",
+        "workspace_root": "runs",
+        "workspace": "ws",
         "repo_path": "repos/target",
         "url": "https://example.com",
         "effective_config_path": "adversa.toml",
@@ -48,7 +49,7 @@ def test_run_tracks_all_phases_and_status(monkeypatch: pytest.MonkeyPatch) -> No
     calls: list[str] = []
 
     async def fake_execute_activity(*args, **kwargs):  # type: ignore[no-untyped-def]
-        phase = args[6]
+        phase = kwargs["args"][5]
         calls.append(phase)
         return {"status": "completed"}
 
@@ -73,7 +74,7 @@ def test_update_config_unblocks_waiting(monkeypatch: pytest.MonkeyPatch) -> None
     attempts = {"count": 0}
 
     async def fake_execute_activity(*args, **kwargs):  # type: ignore[no-untyped-def]
-        phase = args[6]
+        phase = kwargs["args"][5]
         if phase == "intake" and attempts["count"] == 0:
             attempts["count"] += 1
             raise RuntimeError("401 Unauthorized")
@@ -105,7 +106,7 @@ def test_cancel_stops_phase_execution(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     async def fake_execute_activity(*args, **kwargs):  # type: ignore[no-untyped-def]
-        phase = args[6]
+        phase = kwargs["args"][5]
         calls.append(phase)
         if phase == "intake":
             wf.cancel()

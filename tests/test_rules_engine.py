@@ -152,11 +152,14 @@ def test_activity_persists_selected_analyzers_from_rules(
     from adversa.workflow_temporal import activities as workflow_activities
 
     async def _fake_recon(**kwargs):  # type: ignore[no-untyped-def]
-        return ReconReport(
-            target_url=kwargs["url"],
-            canonical_url=kwargs["url"],
-            host="staging.example.com",
-            path="/api/users",
+        return (
+            ReconReport(
+                target_url=kwargs["url"],
+                canonical_url=kwargs["url"],
+                host="staging.example.com",
+                path="/api/users",
+            ),
+            "# Recon Analysis\n\nStub.\n",
         )
 
     monkeypatch.setattr(workflow_activities, "build_recon_report", _fake_recon)

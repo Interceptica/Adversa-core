@@ -156,6 +156,7 @@ def run_command(
     store.write_manifest(manifest)
 
     payload = {
+        "workspace_root": cfg.run.workspace_root,
         "workspace": workspace,
         "repo_path": str(repo_path),
         "url": safe_url,

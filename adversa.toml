@@ -1,0 +1,16 @@
+[provider]
+provider = "openai_compatible"
+base_url = "https://api.novita.ai/openai"
+model = "deepseek/deepseek-v3.2"
+api_key_env = "NOVITA_API_KEY"
+
+[safety]
+acknowledgement = true
+safe_mode = true
+network_discovery_enabled = true
+active_scanning_enabled = true
+
+[run]
+workspace_root = "runs"
+repos_root = "repos"
+task_queue = "adversa-task-queue"

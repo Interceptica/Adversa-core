@@ -23,6 +23,7 @@ class SafetyConfig(BaseModel):
     acknowledgement: bool = False
     safe_mode: bool = True
     network_discovery_enabled: bool = False
+    active_scanning_enabled: bool = False
 
 
 class RunConfig(BaseModel):

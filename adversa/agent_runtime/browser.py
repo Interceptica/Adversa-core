@@ -30,6 +30,7 @@ excluded from all phases.
 
 from __future__ import annotations
 
+import os
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
@@ -40,11 +41,13 @@ from langchain_core.tools import BaseTool
 # Read-only tools safe for passive surface mapping (recon phase).
 # browser_evaluate excluded: arbitrary JS execution risk.
 # browser_file_upload excluded: not relevant for recon.
+# browser_tabs excluded: @playwright/mcp requires action:"list"|"new"|"close"|"select";
+#   models call it without the required action arg causing hard ToolExceptions.
 RECON_BROWSER_TOOLS: frozenset[str] = frozenset(
     {
         "browser_navigate",
         "browser_snapshot",
-        "browser_take_screenshot",
+        # "browser_take_screenshot",
         "browser_network_requests",
         "browser_console_messages",
         "browser_click",
@@ -52,10 +55,12 @@ RECON_BROWSER_TOOLS: frozenset[str] = frozenset(
         "browser_press_key",
         "browser_hover",
         "browser_wait_for",
-        "browser_tabs",
         "browser_navigate_back",
     }
 )
+# browser_evaluate excluded: arbitrary JS execution risk.
+# browser_file_upload excluded: not relevant for recon.
+# browser_tabs excluded: requires action:"list"|"new"|"close"|"select" arg — models omit it.
 
 # Extends recon tools with form interaction for safe input-handling verification.
 # Used by the vulnerability phase to test how the app handles user-controlled input.
@@ -102,12 +107,19 @@ async def playwright_tools_context(
     session_id = run_id or str(uuid.uuid4())
     user_data_dir = f"{tempfile.gettempdir()}/adversa-playwright-{session_id}"
 
+    # Prefer system Chromium when the env var is set (Docker image).
+    # Pass --browser chromium so @playwright/mcp doesn't look for chrome/msedge.
+    chromium_exe = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH", "")
+
     args = [
         "@playwright/mcp@latest",
+        "--browser", "chromium",
         "--isolated",
         "--user-data-dir",
         user_data_dir,
     ]
+    if chromium_exe:
+        args += ["--executable-path", chromium_exe]
     if headless:
         args.append("--headless")
 
@@ -119,7 +131,9 @@ async def playwright_tools_context(
         }
     }
 
-    async with MultiServerMCPClient(server_config) as client:  # type: ignore[attr-defined]
-        all_tools: list[BaseTool] = await client.get_tools()
-        safe_tools = [t for t in all_tools if t.name in allowed_tools]
-        yield safe_tools
+    # langchain-mcp-adapters 0.1.0+: MultiServerMCPClient is stateless — no context manager.
+    # Each tool invocation creates its own MCP session and cleans up automatically.
+    client = MultiServerMCPClient(server_config)
+    all_tools: list[BaseTool] = await client.get_tools()
+    safe_tools = [t for t in all_tools if t.name in allowed_tools]
+    yield safe_tools

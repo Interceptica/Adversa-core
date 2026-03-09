@@ -717,6 +717,31 @@ class VulnReport(BaseModel):
         )
 
 
+class RetestStep(BaseModel):
+    id: str = Field(description="Stable retest step identifier, e.g. 'RETEST-001'.")
+    finding_id: str = Field(description="Finding identifier this step targets, e.g. 'INJ-001'.")
+    endpoint: str = Field(description="Affected endpoint, e.g. 'POST /api/login'.")
+    method: str | None = Field(default=None, description="HTTP method, e.g. 'POST'.")
+    vulnerability_type: str = Field(description="Vulnerability type from the original finding.")
+    severity: Literal["critical", "high", "medium", "low", "info"] = Field(
+        description="Severity from the original finding."
+    )
+    parameter: str | None = Field(default=None, description="Affected parameter or field name.")
+    remediation_summary: str = Field(description="Concise fix description from the original finding.")
+    verification_steps: list[str] = Field(description="Ordered steps to verify the fix is effective.")
+    pass_criteria: str = Field(description="Criterion that must be met to consider this step passed.")
+
+
+class RetestPlan(BaseModel):
+    target_url: str = Field(description="Target URL for the retest.")
+    generated_at: str = Field(description="ISO 8601 datetime when the retest plan was generated.")
+    total_findings: int = Field(description="Total number of findings included in this retest plan.")
+    retest_steps: list[RetestStep] = Field(
+        default_factory=list,
+        description="Ordered retest steps, one per finding, sorted by severity.",
+    )
+
+
 class ArtifactEntry(BaseModel):
     path: str = Field(description="Run-relative path to a generated artifact file.")
     sha256: str = Field(description="SHA-256 digest of the artifact contents for reproducibility checks.")
@@ -751,7 +776,8 @@ class ManifestState(BaseModel):
 
 
 class WorkflowInput(BaseModel):
-    workspace: str = Field(description="Workspace root or workspace key where run artifacts should be stored.")
+    workspace_root: str = Field(default="runs", description="Root directory under which workspace run artifacts are stored (e.g. 'runs').")
+    workspace: str = Field(description="Workspace name used to group run artifacts (e.g. 'juice-shop').")
     repo_path: str = Field(description="Authorized target repository path under the local repos directory.")
     url: str = Field(description="Target URL for the Adversa run.")
     effective_config_path: str = Field(description="Resolved configuration file path used for this execution.")
@@ -819,6 +845,8 @@ def schema_export(target_dir: Path) -> None:
         VulnerabilityFinding,
         AnalyzerReport,
         VulnReport,
+        RetestStep,
+        RetestPlan,
         ArtifactIndex,
         ManifestState,
         WorkflowInput,

@@ -8,6 +8,7 @@ from adversa.state.models import (
     FrameworkSignal,
     NetworkDiscoveryReport,
     PreReconReport,
+    RetestPlan,
     RouteSurface,
     SecurityConfigSignal,
     VulnReport,
@@ -24,52 +25,58 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
     monkeypatch.setattr(
         workflow_activities,
         "build_prerecon_report",
-        lambda **kwargs: PreReconReport(
-            target_url=kwargs["url"],
-            canonical_url=kwargs["url"],
-            host="example.com",
-            path="/",
-            repo_path=kwargs["repo_path"],
-            repo_root_validated=True,
-            repo_top_level_entries=["src"],
-            framework_signals=[
-                FrameworkSignal(name="nodejs_app", evidence="package.json", evidence_level="high")
-            ],
-            candidate_routes=[
-                RouteSurface(
-                    path="/",
-                    kind="page",
-                    scope_classification="in_scope",
-                    evidence="app/page.tsx",
-                    evidence_level="high",
-                )
-            ],
-            auth_signals=[],
-            schema_files=[],
-            external_integrations=[],
-            security_config=[
-                SecurityConfigSignal(
-                    signal="cors_enabled",
-                    location="middleware.ts",
-                    evidence="CORS middleware configuration",
-                    evidence_level="medium",
-                )
-            ],
-            scope_inputs={},
-            plan_inputs={},
-            warnings=[],
-            remediation_hints=[],
+        lambda **kwargs: (
+            PreReconReport(
+                target_url=kwargs["url"],
+                canonical_url=kwargs["url"],
+                host="example.com",
+                path="/",
+                repo_path=kwargs["repo_path"],
+                repo_root_validated=True,
+                repo_top_level_entries=["src"],
+                framework_signals=[
+                    FrameworkSignal(name="nodejs_app", evidence="package.json", evidence_level="high")
+                ],
+                candidate_routes=[
+                    RouteSurface(
+                        path="/",
+                        kind="page",
+                        scope_classification="in_scope",
+                        evidence="app/page.tsx",
+                        evidence_level="high",
+                    )
+                ],
+                auth_signals=[],
+                schema_files=[],
+                external_integrations=[],
+                security_config=[
+                    SecurityConfigSignal(
+                        signal="cors_enabled",
+                        location="middleware.ts",
+                        evidence="CORS middleware configuration",
+                        evidence_level="medium",
+                    )
+                ],
+                scope_inputs={},
+                plan_inputs={},
+                warnings=[],
+                remediation_hints=[],
+            ),
+            "# Pre-Recon Analysis\n\nStub.\n",
         ),
     )
     import adversa.netdisc.controller as netdisc_controller
     from adversa.state.models import ReconReport
 
     async def _fake_recon(**kwargs):  # type: ignore[no-untyped-def]
-        return ReconReport(
-            target_url=kwargs["url"],
-            canonical_url=kwargs["url"],
-            host="example.com",
-            path="/",
+        return (
+            ReconReport(
+                target_url=kwargs["url"],
+                canonical_url=kwargs["url"],
+                host="example.com",
+                path="/",
+            ),
+            "# Recon Analysis\n\nStub.\n",
         )
 
     monkeypatch.setattr(workflow_activities, "build_recon_report", _fake_recon)
@@ -107,6 +114,29 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
 
     monkeypatch.setattr(workflow_activities, "build_vuln_report", _fake_vuln)
 
+    def _fake_build_report(**kwargs):  # type: ignore[no-untyped-def]
+        return {
+            "report_md": "# Report\n\nStub.\n",
+            "exec_summary_md": "# Executive Summary\n\nStub.\n",
+            "retest_plan": RetestPlan(
+                target_url=kwargs["url"],
+                generated_at="2024-01-01T00:00:00+00:00",
+                total_findings=0,
+                retest_steps=[],
+            ),
+            "findings_summary": {
+                "total": 0,
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "info": 0,
+                "externally_exploitable": 0,
+            },
+        }
+
+    monkeypatch.setattr(workflow_activities, "build_report", _fake_build_report)
+
     expected_phase_files = {
         "intake": {"output.json", "summary.md", "coverage.json", "scope.json", "plan.json", "coverage_intake.json"},
         "prerecon": {"output.json", "summary.md", "coverage.json", "pre_recon.json"},
@@ -132,7 +162,7 @@ def test_all_phases_emit_required_baseline_and_phase_specific_artifacts(
 
         phase_dir = tmp_path / "ws" / "run1" / phase
         assert expected_phase_files[phase].issubset({path.name for path in phase_dir.iterdir() if path.is_file()})
-        if phase in ("prerecon", "netdisc", "recon", "vuln"):
+        if phase in ("prerecon", "netdisc", "recon", "vuln", "report"):
             assert (phase_dir / "evidence" / "baseline.json").exists()
         else:
             assert (phase_dir / "evidence" / "stub.txt").exists()

@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import socket
 from urllib.parse import urlparse
 
 from adversa.config.models import AdversaConfig
 from adversa.security.rule_compiler import compile_rules
 from adversa.state.models import IntakeCoverage, ScopeContract
+
+
+def _resolve_host_ips(host: str) -> list[str]:
+    """Return IP addresses for *host*, silently returning [] on failure."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+        return list({info[4][0] for info in infos})
+    except OSError:
+        return []
 
 
 def build_scope_contract(
@@ -52,6 +62,11 @@ def build_scope_contract(
         "avoid": _rule_entries(compiled_rules, action="avoid"),
     }
 
+    # Resolve hostname to IPs so downstream scope checks accept nmap/httpx targets.
+    # Especially important for Docker-internal names like host.docker.internal.
+    resolved_ips = _resolve_host_ips(host) if host else []
+    allowed_hosts = list({host, *resolved_ips}) if host else []
+
     return ScopeContract(
         target_url=url,
         repo_path=repo_path,
@@ -61,7 +76,7 @@ def build_scope_contract(
         source_precedence=["cli", "interactive_intake", "config", "rules", "safe_defaults"],
         normalized_host=host,
         normalized_path=path,
-        allowed_hosts=[host] if host else [],
+        allowed_hosts=allowed_hosts,
         allowed_subdomains=[subdomain] if subdomain else [],
         allowed_paths=sorted({path, *focus_paths}),
         exclusions=sorted({*avoid_paths, *exclusions}),

@@ -44,13 +44,19 @@ def _load_scope_contract(
 ) -> ScopeContract | None:
     """Load scope contract from intake phase artifacts."""
     from adversa.artifacts.store import ArtifactStore
+    from pydantic import ValidationError
 
     store = ArtifactStore(Path(workspace_root), workspace, run_id)
     scope_path = store.phase_dir("intake") / "scope.json"
     if not scope_path.exists():
         return None
     data = json.loads(scope_path.read_text(encoding="utf-8"))
-    return ScopeContract.model_validate(data)
+    try:
+        return ScopeContract.model_validate(data)
+    except ValidationError:
+        # Intake writes a minimal stub scope.json that doesn't satisfy the full
+        # ScopeContract schema. Return None so netdisc proceeds without scope filtering.
+        return None
 
 
 # ── Scope classification helpers ─────────────────────────────────────────────
@@ -120,6 +126,10 @@ def _build_netdisc_request(
     passive_discovery_enabled: bool,
     active_scanning_enabled: bool,
 ) -> str:
+    from urllib.parse import urlparse as _urlparse
+    _parsed = _urlparse(url)
+    target_port: int | None = _parsed.port or (443 if _parsed.scheme == "https" else 80)
+
     scope_summary: dict[str, Any] = {
         "normalized_host": scope.normalized_host,
         "allowed_hosts": scope.allowed_hosts,
@@ -136,6 +146,7 @@ def _build_netdisc_request(
         f"- target_url: {url}\n"
         f"- canonical_url: {canonical_url}\n"
         f"- normalized_host: {host}\n"
+        f"- target_port: {target_port}  ← focus port scans here first\n"
         "\nScope contract:\n"
         f"{json.dumps(scope_summary, indent=2)}\n"
         "\nDiscovery flags:\n"
@@ -143,6 +154,8 @@ def _build_netdisc_request(
         "\nRequirements:\n"
         "- Run the discovery tools as instructed in the system prompt.\n"
         "- Only target in-scope hosts. The bash tool blocks out-of-scope commands.\n"
+        "- Focus port scanning on target_port first; expand to common ports only if needed.\n"
+        "- Do NOT scan ports used by local infrastructure (e.g. 8080, 7233) unless they are part of the target application.\n"
         "- Populate the full NetworkDiscoveryReport with discovered hosts, fingerprints, TLS, and ports.\n"
         "- Add warnings for any tools that fail or are not installed.\n"
         "- Set passive_discovery_enabled and active_scanning_enabled in the report.\n"
@@ -216,8 +229,8 @@ async def build_network_discovery_report(
         Validated ``NetworkDiscoveryReport`` artifact.
     """
     cfg = load_config(config_path)
-    passive_discovery_enabled = getattr(cfg.safety, "network_discovery_enabled", False)
-    active_scanning_enabled = getattr(cfg.safety, "active_scanning_enabled", False)
+    passive_discovery_enabled = cfg.safety.network_discovery_enabled
+    active_scanning_enabled = cfg.safety.active_scanning_enabled
 
     parsed = urlparse(url)
     canonical_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")

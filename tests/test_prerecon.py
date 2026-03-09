@@ -119,78 +119,12 @@ repos_root = "{(repo_project_root / 'repos').as_posix()}"
         def invoke(self, payload: dict) -> dict:
             assert "repo_virtual_path" in payload["messages"][0]["content"]
             return {
-                "structured_response": {
-                    "target_url": "ignored",
-                    "canonical_url": "ignored",
-                    "host": "ignored",
-                    "path": "ignored",
-                    "repo_path": "ignored",
-                    "repo_root_validated": False,
-                    "repo_top_level_entries": ["src", "package.json", "src"],
-                    "framework_signals": [
-                        {"name": "nextjs_app", "evidence": "package.json", "evidence_level": "high"},
-                        {"name": "nextjs_app", "evidence": "package.json", "evidence_level": "high"},
-                    ],
-                    "candidate_routes": [
-                        {
-                            "path": "/users",
-                            "kind": "page",
-                            "scope_classification": "in_scope",
-                            "evidence": "app/users/page.tsx",
-                            "evidence_level": "high",
-                        },
-                        {
-                            "path": "/users",
-                            "kind": "page",
-                            "scope_classification": "in_scope",
-                            "evidence": "app/users/page.tsx",
-                            "evidence_level": "high",
-                        },
-                        {
-                            "path": "/auth/login",
-                            "kind": "api",
-                            "scope_classification": "in_scope",
-                            "evidence": "app/api/auth/login/route.ts",
-                            "evidence_level": "high",
-                        },
-                    ],
-                    "auth_signals": [
-                        {
-                            "signal": "jwt_validation",
-                            "location": "middleware.ts",
-                            "evidence": "JWT validation middleware found",
-                            "evidence_level": "medium",
-                        }
-                    ],
-                    "schema_files": [
-                        {
-                            "path": "openapi.yaml",
-                            "schema_type": "openapi",
-                            "evidence_level": "high",
-                        }
-                    ],
-                    "external_integrations": [
-                        {
-                            "name": "stripe",
-                            "location": "lib/stripe.ts",
-                            "kind": "api_client",
-                            "evidence": "Stripe SDK client setup",
-                            "evidence_level": "medium",
-                        }
-                    ],
-                    "security_config": [
-                        {
-                            "signal": "cors_enabled",
-                            "location": "middleware.ts",
-                            "evidence": "CORS middleware configuration",
-                            "evidence_level": "medium",
-                        }
-                    ],
-                    "scope_inputs": {},
-                    "plan_inputs": {},
-                    "warnings": ["missing auth hints", "missing auth hints"],
-                    "remediation_hints": ["inspect auth middleware", "inspect auth middleware"],
-                }
+                "messages": [
+                    type("AIMessage", (), {
+                        "content": "# Pre-Recon Analysis\n\n## Framework Signals\n\n- Next.js app detected\n\n## Candidate Routes\n\n- /users\n- /auth/login\n",
+                        "additional_kwargs": {},
+                    })()
+                ]
             }
 
     captured: dict[str, object] = {}
@@ -201,7 +135,7 @@ repos_root = "{(repo_project_root / 'repos').as_posix()}"
 
     monkeypatch.setattr(prerecon_controller, "create_deep_agent", fake_create_deep_agent)
 
-    report = prerecon_controller.build_prerecon_report(
+    report, markdown = prerecon_controller.build_prerecon_report(
         workspace_root=str(repo_project_root),
         workspace="ws",
         run_id="run1",
@@ -215,11 +149,10 @@ repos_root = "{(repo_project_root / 'repos').as_posix()}"
     assert report.target_url == "https://staging.example.com/api/users"
     assert report.canonical_url == "https://staging.example.com/api/users"
     assert report.repo_root_validated is True
-    assert [item.name for item in report.framework_signals] == ["nextjs_app"]
-    assert [item.path for item in report.candidate_routes] == ["/auth/login", "/users"]
-    assert report.auth_signals[0].signal == "jwt_validation"
-    assert report.schema_files[0].path == "openapi.yaml"
-    assert report.warnings == ["missing auth hints"]
+    # Markdown-first: agent output is captured as markdown, not parsed into structured fields
+    assert "## Framework Signals" in markdown
+    assert "## Candidate Routes" in markdown
+    assert "/users" in markdown
 
 
 def test_prerecon_activity_writes_schema_valid_report_and_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -234,65 +167,68 @@ repos_root = "{(tmp_path / 'repos').as_posix()}"
     )
 
     def fake_build_prerecon_report(**kwargs):  # type: ignore[no-untyped-def]
-        return PreReconReport(
-            target_url=kwargs["url"],
-            canonical_url=kwargs["url"],
-            host="staging.example.com",
-            path="/api/users",
-            repo_path=kwargs["repo_path"],
-            repo_root_validated=True,
-            repo_top_level_entries=["package.json", "src"],
-            framework_signals=[
-                FrameworkSignal(name="nodejs_app", evidence="package.json", evidence_level="high")
-            ],
-            candidate_routes=[
-                RouteSurface(
-                    path="/api/users",
-                    kind="api",
-                    scope_classification="in_scope",
-                    evidence="app/api/users/route.ts",
-                    evidence_level="high",
-                ),
-                RouteSurface(
-                    path="/auth/login",
-                    kind="api",
-                    scope_classification="in_scope",
-                    evidence="app/api/auth/login/route.ts",
-                    evidence_level="high",
-                ),
-            ],
-            auth_signals=[
-                AuthSignal(
-                    signal="session_cookie",
-                    location="middleware.ts",
-                    evidence="Session cookie middleware configured",
-                    evidence_level="medium",
-                )
-            ],
-            schema_files=[
-                SchemaFile(path="openapi.yaml", schema_type="openapi", evidence_level="high")
-            ],
-            external_integrations=[
-                ExternalIntegration(
-                    name="stripe",
-                    location="lib/stripe.ts",
-                    kind="api_client",
-                    evidence="Stripe client initialization",
-                    evidence_level="medium",
-                )
-            ],
-            security_config=[
-                SecurityConfigSignal(
-                    signal="cors_enabled",
-                    location="middleware.ts",
-                    evidence="CORS middleware configuration",
-                    evidence_level="medium",
-                )
-            ],
-            scope_inputs={"allowed_paths": ["/api/*"]},
-            plan_inputs={"selected_analyzers": ["repo_inventory", "baseline_metadata"]},
-            warnings=["auth flow inferred from config only"],
-            remediation_hints=["inspect middleware for stronger auth evidence"],
+        return (
+            PreReconReport(
+                target_url=kwargs["url"],
+                canonical_url=kwargs["url"],
+                host="staging.example.com",
+                path="/api/users",
+                repo_path=kwargs["repo_path"],
+                repo_root_validated=True,
+                repo_top_level_entries=["package.json", "src"],
+                framework_signals=[
+                    FrameworkSignal(name="nodejs_app", evidence="package.json", evidence_level="high")
+                ],
+                candidate_routes=[
+                    RouteSurface(
+                        path="/api/users",
+                        kind="api",
+                        scope_classification="in_scope",
+                        evidence="app/api/users/route.ts",
+                        evidence_level="high",
+                    ),
+                    RouteSurface(
+                        path="/auth/login",
+                        kind="api",
+                        scope_classification="in_scope",
+                        evidence="app/api/auth/login/route.ts",
+                        evidence_level="high",
+                    ),
+                ],
+                auth_signals=[
+                    AuthSignal(
+                        signal="session_cookie",
+                        location="middleware.ts",
+                        evidence="Session cookie middleware configured",
+                        evidence_level="medium",
+                    )
+                ],
+                schema_files=[
+                    SchemaFile(path="openapi.yaml", schema_type="openapi", evidence_level="high")
+                ],
+                external_integrations=[
+                    ExternalIntegration(
+                        name="stripe",
+                        location="lib/stripe.ts",
+                        kind="api_client",
+                        evidence="Stripe client initialization",
+                        evidence_level="medium",
+                    )
+                ],
+                security_config=[
+                    SecurityConfigSignal(
+                        signal="cors_enabled",
+                        location="middleware.ts",
+                        evidence="CORS middleware configuration",
+                        evidence_level="medium",
+                    )
+                ],
+                scope_inputs={"allowed_paths": ["/api/*"]},
+                plan_inputs={"selected_analyzers": ["repo_inventory", "baseline_metadata"]},
+                warnings=["auth flow inferred from config only"],
+                remediation_hints=["inspect middleware for stronger auth evidence"],
+            ),
+            "# Pre-Recon Analysis\n\nFake markdown content.\n",
         )
 
     monkeypatch.setattr(workflow_activities, "build_prerecon_report", fake_build_prerecon_report)

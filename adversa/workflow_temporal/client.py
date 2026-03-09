@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 
 from temporalio.client import Client
@@ -9,7 +10,9 @@ from adversa.workflow_temporal.activities import provider_health_check
 from adversa.workflow_temporal.workflows import AdversaRunWorkflow
 
 
-async def get_client(address: str = "localhost:7233", namespace: str = DEFAULT_NAMESPACE) -> Client:
+async def get_client(address: str | None = None, namespace: str = DEFAULT_NAMESPACE) -> Client:
+    if address is None:
+        address = os.environ.get("TEMPORAL_HOST", "localhost:7233")
     return await Client.connect(address, namespace=namespace)
 
 

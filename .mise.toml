@@ -1,53 +1,98 @@
 # mise-en-place configuration for Adversa
 # https://mise.jdx.dev/getting-started.html
+#
+# After cloning, run:
+#   mise install        → installs all mise-managed tools
+#   mise run bootstrap  → installs system tools (nmap, whatweb)
+#   mise run install    → installs Python dependencies via uv
 
 [tools]
 python = "3.11"
-node = "22"
-# Network discovery tools (managed via mise via aqua registry)
-# nmap, openssl, and whatweb are system packages — install via: brew install nmap openssl whatweb
+node   = "22"
+# ProjectDiscovery tools via aqua backend
 "aqua:projectdiscovery/subfinder" = "latest"
-"aqua:projectdiscovery/httpx" = "latest"
-"aqua:projectdiscovery/nuclei" = "latest"
+"aqua:projectdiscovery/httpx"     = "latest"
+"aqua:projectdiscovery/nuclei"    = "latest"
+"gem:addressable"                 = "latest"
+# nmap + whatweb cannot be managed by mise — run: mise run bootstrap
 
 [env]
-_.file = ".env"
-ADVERSA_ENV = "development"
+_.file       = ".env"
+ADVERSA_ENV  = "development"
 
-# Task aliases for common operations
+# ─── Tasks ────────────────────────────────────────────────────────────────────
+
+[tasks.bootstrap]
+description = "Install system tools not managed by mise (nmap, whatweb)"
+run = """
+  set -e
+
+  # ── nmap ──────────────────────────────────────────────────────────────────
+  if command -v nmap &>/dev/null; then
+    echo "✓ nmap already installed: $(which nmap)"
+  elif command -v brew &>/dev/null; then
+    brew install nmap
+  elif command -v apt-get &>/dev/null; then
+    sudo apt-get install -y nmap
+  else
+    echo "✗ nmap not found — install manually: https://nmap.org/download.html"
+    exit 1
+  fi
+
+  # ── whatweb ───────────────────────────────────────────────────────────────
+  # Not in Homebrew or RubyGems (gem is yanked). Clone from source.
+  # Wrapper script mirrors the approach used by Shannon (KeygraphHQ).
+  if command -v whatweb &>/dev/null; then
+    echo "✓ whatweb already installed: $(which whatweb)"
+  else
+    mkdir -p ~/.local/bin ~/.local/share
+    git clone --depth 1 https://github.com/urbanadventurer/WhatWeb.git ~/.local/share/whatweb
+    gem install addressable
+    chmod +x ~/.local/share/whatweb/whatweb
+    printf '#!/bin/bash\ncd %s && exec ./whatweb "$@"\n' \
+      "$HOME/.local/share/whatweb" > ~/.local/bin/whatweb
+    chmod +x ~/.local/bin/whatweb
+    echo "✓ whatweb installed: $(which whatweb)"
+  fi
+"""
+
 [tasks.install]
 description = "Install Python dependencies via uv"
 run = "uv sync"
 
 [tasks.test]
 description = "Run pytest test suite"
-run = "pytest"
+run = "uv run pytest"
 
 [tasks.test-watch]
-description = "Run pytest in watch mode"
-run = "pytest-watch"
+description = "Run pytest in watch mode (pytest-watch)"
+run = "uv run ptw"
 
 [tasks.lint]
 description = "Run ruff linter"
-run = "ruff check ."
+run = "uv run ruff check ."
 
 [tasks.lint-fix]
 description = "Run ruff with auto-fix"
-run = "ruff check . --fix"
+run = "uv run ruff check . --fix"
 
 [tasks.worker]
-description = "Start Temporal workflow worker"
-run = "python -m adversa.workflow_temporal.worker"
+description = "Start Temporal workflow worker (foreground)"
+run = "uv run python -m adversa.workflow_temporal.worker"
 
 [tasks.cli]
 description = "Run Adversa CLI"
-run = "python -m adversa"
+run = "uv run python -m adversa"
 
 [tasks.init]
 description = "Initialize Adversa config"
-run = "python -m adversa init"
+run = "uv run python -m adversa init"
 
 [tasks.dev]
-description = "Start development environment (worker in background)"
-run = "python -m adversa.workflow_temporal.worker"
-
+description = "Start worker in background and tail output"
+run = """
+  uv run python -m adversa.workflow_temporal.worker &
+  WORKER_PID=$!
+  echo "Worker started (PID: $WORKER_PID) — Ctrl+C to stop"
+  wait $WORKER_PID
+"""

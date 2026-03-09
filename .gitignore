@@ -1,4 +1,9 @@
 __pycache__
 runs/
+repos/
+.env
+.env.*
+!.env.example
+.mise.local.toml
 .serena/
 .claude/

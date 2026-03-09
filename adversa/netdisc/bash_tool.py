@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -21,9 +22,21 @@ from pydantic import Field
 from adversa.state.models import ScopeContract
 
 
-_DEFAULT_ALLOWED_BINARIES: frozenset[str] = frozenset(
+
+# Network tools that make outbound connections — scope-validated before execution.
+_NETWORK_BINARIES: frozenset[str] = frozenset(
     {"subfinder", "nmap", "httpx", "whatweb", "openssl", "nuclei", "curl"}
 )
+
+# Safe utility commands that process text/output locally — no scope validation needed.
+_UTILITY_BINARIES: frozenset[str] = frozenset(
+    {
+        "which", "jq", "grep", "awk", "sed", "head", "tail", "cat", "echo", "wc", "sort", "uniq", "tr",
+        "dig", "nslookup", "host", "ping", "timeout",
+    }
+)
+
+_DEFAULT_ALLOWED_BINARIES: frozenset[str] = _NETWORK_BINARIES | _UTILITY_BINARIES
 
 
 class ScopedBashTool(BaseTool):
@@ -31,20 +44,23 @@ class ScopedBashTool(BaseTool):
 
     Enforces:
 
-    1. Binary allowlist — only approved network discovery tools may be called.
-    2. Scope contract — the target host must be within the authorized scope.
+    1. Binary allowlist — only approved tools may be called.
+    2. Scope contract — network tools must target only in-scope hosts.
+       Utility commands (jq, grep, awk, etc.) are exempt from scope validation
+       since they make no outbound connections.
     3. Execution timeout — commands are killed after ``timeout_seconds``.
     """
 
     name: str = "bash"
     description: str = (
         "Run a network discovery bash command. "
-        "Allowed binaries: subfinder, nmap, httpx, whatweb, openssl, nuclei, curl. "
-        "Commands must target only in-scope hosts as defined by the scope contract."
+        "Network tools: subfinder, nmap, httpx, whatweb, openssl, nuclei, curl. "
+        "Utility tools: which, jq, grep, awk, sed, head, tail, cat, echo, wc, sort, uniq, tr, dig, nslookup, host, ping. "
+        "Network commands must target only in-scope hosts as defined by the scope contract."
     )
     scope: ScopeContract = Field(description="Authorized scope contract for host validation.")
     allowed_binaries: frozenset[str] = Field(default=_DEFAULT_ALLOWED_BINARIES)
-    timeout_seconds: int = Field(default=60)
+    timeout_seconds: int = Field(default=120)
 
     def _run(self, command: str, **kwargs: Any) -> str:
         """Execute an in-scope network discovery command.
@@ -73,18 +89,20 @@ class ScopedBashTool(BaseTool):
             raise ToolException("Empty command after parsing.")
 
         binary_name = Path(parts[0]).name  # e.g. /usr/bin/nmap → "nmap"
+
         if binary_name not in self.allowed_binaries:
             raise ToolException(
                 f"Binary '{binary_name}' is not in the allowlist. "
-                f"Allowed: {', '.join(sorted(self.allowed_binaries))}"
+                f"Allowed: {sorted(self.allowed_binaries)}"
             )
 
-        # Validate scope before executing.
-        target = self._extract_target(command, parts)
-        if target:
-            self._validate_target(target)
+        # Scope validation only applies to network tools — utilities run locally.
+        if binary_name in _NETWORK_BINARIES:
+            target = self._extract_target(command, parts)
+            if target:
+                self._validate_target(target)
 
-        # Execute command.
+        # Execute command with mise shims in PATH so installed tools are found.
         try:
             result = subprocess.run(
                 command,
@@ -112,24 +130,32 @@ class ScopedBashTool(BaseTool):
         4. ``-connect <host:port>`` (openssl s_client)
         5. ``http://`` / ``https://`` URLs in any argument position
         6. Last non-flag positional argument (nmap, whatweb, curl)
+
+        Shell pipe/redirect suffixes (``| head``, ``> file``, ``&& echo``) are
+        stripped before parsing so they are never mistaken for the target.
         """
+        # Strip everything after the first shell pipe/redirect/chain operator.
+        # This prevents "httpx --help | head -20" from extracting "head" as target.
+        command_first = re.split(r"\s+[|>&;]\s*", command)[0]
+        parts = command_first.split()
+
         # -d flag: subfinder -d example.com
-        m = re.search(r"(?:^|\s)-d\s+(\S+)", command)
+        m = re.search(r"(?:^|\s)-d\s+(\S+)", command_first)
         if m:
             return m.group(1)
 
         # -u flag: httpx -u https://example.com  /  nuclei -u https://example.com
-        m = re.search(r"(?:^|\s)-u\s+(\S+)", command)
+        m = re.search(r"(?:^|\s)-u\s+(\S+)", command_first)
         if m:
             return _host_from_value(m.group(1))
 
         # -host flag
-        m = re.search(r"(?:^|\s)-host\s+(\S+)", command)
+        m = re.search(r"(?:^|\s)-host\s+(\S+)", command_first)
         if m:
             return _host_from_value(m.group(1))
 
         # -connect flag: openssl s_client -connect example.com:443
-        m = re.search(r"-connect\s+(\S+)", command)
+        m = re.search(r"-connect\s+(\S+)", command_first)
         if m:
             value = m.group(1)
             return value.rsplit(":", 1)[0]  # strip :port

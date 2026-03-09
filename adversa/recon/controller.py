@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -18,10 +19,7 @@ from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 
 from adversa.agent_runtime.context import AdversaAgentContext
-from adversa.agent_runtime.middleware import (
-    load_rules_middleware,
-    load_runtime_boundary_middleware,
-)
+from adversa.agent_runtime.middleware import load_runtime_boundary_middleware
 from adversa.config.load import load_config
 from adversa.llm.providers import ProviderClient
 from adversa.agent_runtime.browser import RECON_BROWSER_TOOLS, playwright_tools_context
@@ -56,7 +54,7 @@ async def build_recon_report(
     repo_path: str,
     url: str,
     config_path: str,
-) -> ReconReport:
+) -> tuple[ReconReport, str]:
     context = AdversaAgentContext(
         phase="recon",
         url=url,
@@ -77,19 +75,24 @@ async def build_recon_report(
     )
     model = ProviderClient(cfg.provider).build_chat_model(temperature=0)
 
+    output_virtual_path, disk_output_path = _compute_repo_output_paths(
+        repo_path, run_id, "recon_analysis.md"
+    )
+    output_dir_prefix = str(Path(output_virtual_path).parent) if output_virtual_path else None
+
     async with playwright_tools_context(allowed_tools=RECON_BROWSER_TOOLS, headless=True, run_id=run_id) as browser_tools:
         agent = create_deep_agent(
             model=model,
             tools=browser_tools,
             system_prompt=RECON_PROMPT_PATH.read_text(encoding="utf-8"),
             middleware=[
-                load_rules_middleware(context),
                 load_runtime_boundary_middleware(
-                    context, allowed_repo_virtual_prefix=inputs.repo_virtual_path
+                    context,
+                    allowed_repo_virtual_prefix=inputs.repo_virtual_path,
+                    allowed_output_virtual_prefix=output_dir_prefix,
                 ),
             ],
             subagents=_recon_subagents(),
-            response_format=ReconReport,
             backend=FilesystemBackend(root_dir=PROJECT_ROOT, virtual_mode=True),
             name="adversa-recon",
         )
@@ -98,20 +101,18 @@ async def build_recon_report(
                 "messages": [
                     {
                         "role": "user",
-                        "content": _build_recon_request(inputs),
+                        "content": _build_recon_request(inputs, output_virtual_path),
                     }
                 ]
             }
         )
 
-    structured = result.get("structured_response")
-    if structured is None:
-        raise ValueError("DeepAgent recon run did not return a structured_response.")
-    if isinstance(structured, ReconReport):
-        report = structured
-    else:
-        report = ReconReport.model_validate(structured)
-    return _normalize_report(report, inputs)
+    markdown_content = _read_agent_written_file(disk_output_path)
+    if not markdown_content:
+        markdown_content = _extract_markdown_from_messages(result.get("messages", []))
+
+    report = _build_minimal_report(inputs)
+    return report, markdown_content
 
 
 def load_recon_inputs(
@@ -218,7 +219,7 @@ def _canonical_url(url: str) -> str:
     return f"{scheme}://{host}{path}"
 
 
-def _build_recon_request(inputs: ReconInputs) -> str:
+def _build_recon_request(inputs: ReconInputs, output_virtual_path: str | None = None) -> str:
     prerecon_section = (
         inputs.prerecon_markdown
         if inputs.prerecon_markdown
@@ -228,6 +229,15 @@ def _build_recon_request(inputs: ReconInputs) -> str:
         inputs.netdisc_markdown
         if inputs.netdisc_markdown
         else "_Network discovery report not available — run netdisc phase first._"
+    )
+    output_instruction = (
+        f"\n## Output\n"
+        f"When analysis is complete, call write_file with:\n"
+        f"  file_path: {output_virtual_path}\n"
+        f"  content: <your full markdown report>\n"
+        f"After writing the file, stop. Do not return the report as a chat message.\n"
+        if output_virtual_path
+        else "\nOutput:\n- Return your complete analysis as a markdown report in your final message.\n"
     )
     return (
         "Run a recon (attack surface mapping) analysis for Adversa.\n\n"
@@ -254,8 +264,12 @@ def _build_recon_request(inputs: ReconInputs) -> str:
         "- Use browser tools to verify top endpoints and observe live behavior.\n"
         "- Only navigate to the authorized target_url and hosts from the network discovery report.\n"
         "- Do not fabricate endpoints, roles, or auth flows without code evidence.\n"
-        "- Produce a complete structured ReconReport including authz_candidates and live_observations.\n"
-        "- If something is unknown, leave it out of lists and explain in warnings/remediation_hints.\n"
+        "- Cover: endpoints, auth flows, input vectors, network entities, authz candidates, live observations.\n"
+        "- If something is unknown, note it explicitly.\n"
+        "- IMPORTANT: Dispatch subagents first, then browser verification, then write the report immediately.\n"
+        "  Do NOT read additional files after subagents complete — synthesize from what you have.\n"
+        "  The write_file call must happen before your context is exhausted.\n"
+        f"{output_instruction}"
     )
 
 
@@ -267,7 +281,7 @@ def _recon_subagents() -> list[dict[str, Any]]:
                 "Specialist for deep API endpoint discovery: traces routes to handlers, "
                 "maps auth middleware per route, identifies object ID parameters."
             ),
-            "prompt": (
+            "system_prompt": (
                 "You are a route-to-handler mapping specialist for security reconnaissance.\n"
                 "Your mission: Build a complete inventory of network-accessible endpoints with precise auth requirements.\n\n"
                 "For each endpoint, determine:\n"
@@ -297,7 +311,7 @@ def _recon_subagents() -> list[dict[str, Any]]:
                 "Specialist for authentication flows, session management, role hierarchy, "
                 "privilege storage, and authorization guard mapping."
             ),
-            "prompt": (
+            "system_prompt": (
                 "You are an authentication and authorization architecture specialist.\n"
                 "Your mission: Map the complete auth system — from login to privilege enforcement.\n\n"
                 "Analyze:\n"
@@ -332,7 +346,7 @@ def _recon_subagents() -> list[dict[str, Any]]:
                 "Specialist for cataloging all user-controlled input vectors "
                 "with file locations, validation status, and sink flow analysis."
             ),
-            "prompt": (
+            "system_prompt": (
                 "You are an input surface mapping specialist for security reconnaissance.\n"
                 "Your mission: Catalog every user-controlled input vector with its code location and risk profile.\n\n"
                 "Input vector types to find:\n"
@@ -365,7 +379,7 @@ def _recon_subagents() -> list[dict[str, Any]]:
                 "Specialist for mapping service dependencies, external integrations, "
                 "and the network entity/flow graph."
             ),
-            "prompt": (
+            "system_prompt": (
                 "You are a network topology and service dependency specialist.\n"
                 "Your mission: Map all services, datastores, and external dependencies that the application interacts with.\n\n"
                 "Identify network entities:\n"
@@ -400,6 +414,87 @@ def _recon_subagents() -> list[dict[str, Any]]:
     ]
 
 
+
+def _compute_repo_output_paths(
+    repo_path: str,
+    run_id: str,
+    filename: str,
+) -> tuple[str | None, Path | None]:
+    repo_resolved = Path(repo_path).resolve()
+    disk_path = repo_resolved / "runs" / run_id / filename
+    try:
+        repo_rel = repo_resolved.relative_to(PROJECT_ROOT)
+        virtual_path = str(repo_rel / "runs" / run_id / filename)
+        return virtual_path, disk_path
+    except ValueError:
+        return None, disk_path
+
+
+def _compute_output_paths(
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    phase: str,
+    filename: str,
+) -> tuple[str | None, Path | None]:
+    ws = Path(workspace_root)
+    if not ws.is_absolute():
+        ws = (PROJECT_ROOT / ws).resolve()
+    disk_path = ws / workspace / run_id / phase / filename
+    try:
+        ws_rel = ws.relative_to(PROJECT_ROOT)
+        virtual_path = str(ws_rel / workspace / run_id / phase / filename)
+        return virtual_path, disk_path
+    except ValueError:
+        return None, disk_path
+
+
+def _read_agent_written_file(disk_path: Path | None) -> str:
+    if disk_path and disk_path.exists():
+        try:
+            return disk_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return ""
+
+
+_MIN_REPORT_LENGTH = 500  # chars — anything shorter is a preamble, not a real report
+
+
+def _extract_markdown_from_messages(messages: list) -> str:
+    # Walk messages newest-first, return the first one that looks like a real report
+    # (not a preamble like "Now I'll create..." which the model emits before write_file).
+    for msg in reversed(messages):
+        raw = getattr(msg, "content", "") or ""
+        if isinstance(raw, list):
+            parts = []
+            for block in raw:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    parts.append(block.get("text", "") or "")
+            raw = "\n".join(parts)
+        content: str = raw or ""
+        if not content:
+            content = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning_content", "") or ""
+        content = content.strip()
+        if content and len(content) >= _MIN_REPORT_LENGTH:
+            return content
+    return ""
+
+
+def _build_minimal_report(inputs: ReconInputs) -> ReconReport:
+    return ReconReport(
+        target_url=inputs.target_url,
+        canonical_url=inputs.canonical_url,
+        host=inputs.host,
+        path=inputs.path,
+        scope_inputs=inputs.scope_inputs,
+        plan_inputs=inputs.plan_inputs,
+        warnings=["Recon used markdown-first output mode; structured fields are empty."],
+    )
+
+
 def _normalize_report(report: ReconReport, inputs: ReconInputs) -> ReconReport:
     """Ensure report has canonical URL fields set from inputs."""
     return ReconReport(
@@ -424,3 +519,25 @@ def _normalize_report(report: ReconReport, inputs: ReconInputs) -> ReconReport:
         warnings=report.warnings,
         remediation_hints=report.remediation_hints,
     )
+
+
+def _extract_json_from_messages(messages: list, schema_class: type) -> Any:
+    """Fallback: try to parse schema JSON from the last AI message content."""
+    for msg in reversed(messages):
+        content = getattr(msg, "content", "") or ""
+        if not content:
+            content = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning_content", "") or ""
+        if not content:
+            continue
+        try:
+            data = json.loads(content.strip())
+            return schema_class.model_validate(data)
+        except Exception:
+            pass
+        for match in re.finditer(r"\{[\s\S]*\}", content):
+            try:
+                data = json.loads(match.group())
+                return schema_class.model_validate(data)
+            except Exception:
+                continue
+    return None

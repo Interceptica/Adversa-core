@@ -10,10 +10,7 @@ from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 
 from adversa.agent_runtime.context import AdversaAgentContext
-from adversa.agent_runtime.middleware import (
-    load_rules_middleware,
-    load_runtime_boundary_middleware,
-)
+from adversa.agent_runtime.middleware import load_runtime_boundary_middleware
 from adversa.config.load import load_config
 from adversa.llm.providers import ProviderClient
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
@@ -55,7 +52,7 @@ def build_prerecon_report(
     repo_path: str,
     url: str,
     config_path: str,
-) -> PreReconReport:
+) -> tuple[PreReconReport, str]:
     context = AdversaAgentContext(
         phase="prerecon",
         url=url,
@@ -75,17 +72,25 @@ def build_prerecon_report(
         config_path=config_path,
     )
     model = ProviderClient(cfg.provider).build_chat_model(temperature=0)
+
+    # Output goes inside the repo under <run_id>/ — same tree the agent reads from.
+    # Avoids dual-path confusion (agent reads /repos/x, must write to /runs/.../x).
+    output_virtual_path, disk_output_path = _compute_repo_output_paths(
+        repo_path, run_id, "prerecon.md"
+    )
+    output_dir_prefix = str(Path(output_virtual_path).parent) if output_virtual_path else None
+
     agent = create_deep_agent(
         model=model,
         system_prompt=PRERECON_PROMPT_PATH.read_text(encoding="utf-8"),
         middleware=[
-            load_rules_middleware(context),
             load_runtime_boundary_middleware(
-                context, allowed_repo_virtual_prefix=inputs.repo_virtual_path
+                context,
+                allowed_repo_virtual_prefix=inputs.repo_virtual_path,
+                allowed_output_virtual_prefix=output_dir_prefix,
             ),
         ],
         subagents=_prerecon_subagents(),
-        response_format=PreReconReport,
         backend=FilesystemBackend(root_dir=PROJECT_ROOT, virtual_mode=True),
         name="adversa-prerecon",
     )
@@ -94,19 +99,18 @@ def build_prerecon_report(
             "messages": [
                 {
                     "role": "user",
-                    "content": _build_prerecon_request(inputs),
+                    "content": _build_prerecon_request(inputs, output_virtual_path),
                 }
             ]
         }
     )
-    structured = result.get("structured_response")
-    if structured is None:
-        raise ValueError("DeepAgent prerecon run did not return a structured_response.")
-    if isinstance(structured, PreReconReport):
-        report = structured
-    else:
-        report = PreReconReport.model_validate(structured)
-    return _normalize_report(report, inputs)
+
+    markdown_content = _read_agent_written_file(disk_output_path)
+    if not markdown_content:
+        markdown_content = _extract_markdown_from_messages(result.get("messages", []))
+
+    report = _build_minimal_report(inputs)
+    return report, markdown_content
 
 
 def load_prerecon_inputs(
@@ -211,7 +215,7 @@ def _prerecon_subagents() -> list[dict[str, Any]]:
         {
             "name": "architecture-scanner",
             "description": "Specialized subagent for mapping project structure, technology stack, frameworks, and security-relevant configurations.",
-            "prompt": (
+            "system_prompt": (
                 "You are an architecture analysis specialist for security-focused code reconnaissance.\n"
                 "Your mission: Map the codebase structure, identify frameworks/runtimes, locate entry points, and find security configurations.\n\n"
                 "Focus areas:\n"
@@ -235,7 +239,7 @@ def _prerecon_subagents() -> list[dict[str, Any]]:
         {
             "name": "entry-point-mapper",
             "description": "Specialized subagent for discovering and cataloging all application routes, APIs, endpoints, and webhook handlers.",
-            "prompt": (
+            "system_prompt": (
                 "You are an entry point discovery specialist for security reconnaissance.\n"
                 "Your mission: Find every network-reachable entry point into the application.\n\n"
                 "Discovery targets:\n"
@@ -268,7 +272,7 @@ def _prerecon_subagents() -> list[dict[str, Any]]:
         {
             "name": "sink-hunter",
             "description": "Specialized subagent for identifying XSS, injection, SSRF, deserialization, and path traversal vulnerability sinks.",
-            "prompt": (
+            "system_prompt": (
                 "You are a vulnerability sink discovery specialist for security analysis.\n"
                 "Your mission: Identify dangerous code patterns where user input could lead to security vulnerabilities.\n\n"
                 "Critical sink categories to hunt:\n\n"
@@ -319,7 +323,7 @@ def _prerecon_subagents() -> list[dict[str, Any]]:
         {
             "name": "data-auditor",
             "description": "Specialized subagent for tracing sensitive data flows through the application for security and compliance analysis.",
-            "prompt": (
+            "system_prompt": (
                 "You are a data security and compliance specialist for application analysis.\n"
                 "Your mission: Trace how sensitive data moves through the codebase for security and regulatory compliance.\n\n"
                 "Sensitive data categories to trace:\n\n"
@@ -391,13 +395,22 @@ def _prerecon_subagents() -> list[dict[str, Any]]:
     ]
 
 
-def _build_prerecon_request(inputs: PrereconInputs) -> str:
+def _build_prerecon_request(inputs: PrereconInputs, output_virtual_path: str | None = None) -> str:
+    output_instruction = (
+        f"\n## Output\n"
+        f"When analysis is complete, call write_file with:\n"
+        f"  file_path: {output_virtual_path}\n"
+        f"  content: <your full markdown report>\n"
+        f"After writing the file, stop. Do not return the report as a chat message.\n"
+        if output_virtual_path
+        else "\nOutput:\n- Return your complete analysis as a markdown report in your final message.\n"
+    )
     return (
         "Run a prerecon code analysis for Adversa.\n\n"
         "Authorized target:\n"
         f"- target_url: {inputs.target_url}\n"
         f"- canonical_url: {inputs.canonical_url}\n"
-        f"- repo_virtual_path: {inputs.repo_virtual_path}\n"
+        f"- repo_virtual_path: {inputs.repo_virtual_path}  ← READ files from here\n"
         f"- normalized_host: {inputs.host}\n"
         f"- normalized_path: {inputs.path}\n"
         "\nIntake scope inputs:\n"
@@ -405,16 +418,11 @@ def _build_prerecon_request(inputs: PrereconInputs) -> str:
         "\nPlanner prerecon inputs:\n"
         f"{json.dumps(inputs.plan_inputs, indent=2, sort_keys=True)}\n"
         "\nRequirements:\n"
-        "- Use specialized subagents for comprehensive analysis:\n"
-        "  * architecture-scanner: Framework detection, entry points, configuration analysis\n"
-        "  * entry-point-mapper: Complete route and API endpoint discovery\n"
-        "  * sink-hunter: Vulnerability sink identification (XSS, injection, SSRF, deserialization, path traversal)\n"
-        "  * data-auditor: Sensitive data flow tracing and compliance analysis (PII, credentials, financial data)\n"
-        "- Use deep filesystem tools only under the authorized repo_virtual_path.\n"
-        "- Do not fabricate frameworks, routes, auth flows, or vulnerability findings.\n"
-        "- Prefer concrete file-backed evidence with file paths and line numbers.\n"
-        "- Produce a complete structured PreReconReport including vulnerability_sinks and data_flow_patterns.\n"
-        "- If something is unknown, leave it out of lists and explain it in warnings/remediation_hints.\n"
+        "- Delegate to subagents for analysis, then synthesize their findings.\n"
+        "- Read files ONLY under repo_virtual_path. Be focused — do not read every file.\n"
+        "- Do not fabricate findings. Prefer evidence with file paths and line numbers.\n"
+        "- Once subagents complete, synthesize immediately. Do not do more reads.\n"
+        f"{output_instruction}"
     )
 
 
@@ -560,3 +568,97 @@ def _dedupe_data_flow_patterns(items: list[DataFlowPattern]) -> list[DataFlowPat
             item.evidence_level,
         ),
     )[:30]
+
+
+def _compute_repo_output_paths(
+    repo_path: str,
+    run_id: str,
+    filename: str,
+) -> tuple[str | None, Path | None]:
+    """Return (virtual_path, disk_path) for an output file written inside the repo under <run_id>/.
+
+    Writing to the same tree the agent reads from avoids dual-path confusion.
+    """
+    repo_resolved = Path(repo_path).resolve()
+    disk_path = repo_resolved / "runs" / run_id / filename
+    try:
+        repo_rel = repo_resolved.relative_to(PROJECT_ROOT)
+        virtual_path = str(repo_rel / "runs" / run_id / filename)
+        return virtual_path, disk_path
+    except ValueError:
+        return None, disk_path
+
+
+def _compute_output_paths(
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    phase: str,
+    filename: str,
+) -> tuple[str | None, Path | None]:
+    """Return (virtual_path_for_agent, absolute_disk_path) for an output artifact.
+
+    The virtual path is relative to PROJECT_ROOT (used by FilesystemBackend with virtual_mode=True).
+    Returns (None, None) if workspace_root is outside PROJECT_ROOT (agent can't write there).
+    """
+    ws = Path(workspace_root)
+    if not ws.is_absolute():
+        ws = (PROJECT_ROOT / ws).resolve()
+    disk_path = ws / workspace / run_id / phase / filename
+    try:
+        ws_rel = ws.relative_to(PROJECT_ROOT)
+        virtual_path = str(ws_rel / workspace / run_id / phase / filename)
+        return virtual_path, disk_path
+    except ValueError:
+        return None, disk_path  # outside PROJECT_ROOT; agent can't write, but we can still check disk
+
+
+def _read_agent_written_file(disk_path: Path | None) -> str:
+    """Read markdown content written by the agent via write_file, if present."""
+    if disk_path and disk_path.exists():
+        try:
+            return disk_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return ""
+
+
+def _extract_markdown_from_messages(messages: list) -> str:
+    """Extract the agent's final markdown output from the last AI message.
+
+    Handles both standard models (content field) and thinking/reasoning models
+    (glm-4.7, etc.) that put analysis in additional_kwargs['reasoning_content'].
+    Also handles multimodal messages where content is a list of content blocks.
+    """
+    for msg in reversed(messages):
+        raw = getattr(msg, "content", "") or ""
+        if isinstance(raw, list):
+            parts = []
+            for block in raw:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    parts.append(block.get("text", "") or "")
+            raw = "\n".join(parts)
+        content: str = raw or ""
+        if not content:
+            content = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning_content", "") or ""
+        content = content.strip()
+        if content and len(content) >= 500:
+            return content
+    return ""
+
+
+def _build_minimal_report(inputs: "PrereconInputs") -> PreReconReport:
+    """Build a minimal PreReconReport from URL/repo inputs for workflow metadata."""
+    return PreReconReport(
+        target_url=inputs.target_url,
+        canonical_url=inputs.canonical_url,
+        host=inputs.host,
+        path=inputs.path,
+        repo_path=inputs.repo_path,
+        repo_root_validated=inputs.repo_root_validated,
+        scope_inputs=inputs.scope_inputs,
+        plan_inputs=inputs.plan_inputs,
+        warnings=["Prerecon used markdown-first output mode; structured fields are empty."],
+    )

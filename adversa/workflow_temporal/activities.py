@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import json
 
@@ -17,11 +18,12 @@ from adversa.llm.providers import ProviderClient
 from adversa.logging.audit import AuditLogger
 from adversa.prerecon.controller import build_prerecon_report
 from adversa.recon.controller import build_recon_report
+from adversa.report.controller import build_report
 from adversa.vuln.controller import build_vuln_report
 from adversa.security.rule_compiler import compile_rules
 from adversa.security.rules import RuntimeTarget, evaluate_rules
 from adversa.state.models import EvidenceRef, ManifestState, PhaseOutput
-from adversa.state.schemas import validate_phase_output, validate_pre_recon, validate_recon, validate_vuln
+from adversa.state.schemas import validate_phase_output, validate_pre_recon, validate_recon, validate_retest_plan, validate_vuln
 
 
 PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, object]] = {
@@ -58,7 +60,12 @@ def _write_extra_phase_artifacts(
     url: str,
     repo_path: str,
     safe_mode: bool,
+    workspace: str = "",
 ) -> list[Path]:
+    from urllib.parse import urlparse as _urlparse
+
+    from adversa.state.models import ScopeContract
+
     phase_dir = store.phase_dir(phase)
     written: list[Path] = []
     payloads = dict(PHASE_EXTRA_ARTIFACTS.get(phase, {}))
@@ -68,6 +75,34 @@ def _write_extra_phase_artifacts(
             repo_path=repo_path,
             config=cfg,
             safe_mode=safe_mode,
+        ).model_dump(mode="json")
+
+        # Build a real ScopeContract from the toml/cli config so downstream
+        # phases (netdisc etc.) can load it with ScopeContract.model_validate().
+        _parsed = _urlparse(url)
+        _focus_hosts = [r.value for r in cfg.rules.focus if r.type == "host"]
+        _focus_subdomains = [r.value for r in cfg.rules.focus if r.type == "subdomain"]
+        _focus_paths = [r.value for r in cfg.rules.focus if r.type == "path"]
+        _avoid_values = [r.value for r in cfg.rules.avoid]
+        payloads["scope.json"] = ScopeContract(
+            target_url=url,
+            repo_path=repo_path,
+            workspace=workspace,
+            authorized=True,
+            safe_mode=safe_mode,
+            source_precedence=["toml", "cli"],
+            normalized_host=(_parsed.hostname or "").lower(),
+            normalized_path=_parsed.path or "/",
+            allowed_hosts=_focus_hosts,
+            allowed_subdomains=_focus_subdomains,
+            allowed_paths=_focus_paths,
+            exclusions=_avoid_values,
+            capability_constraints=(["safe_mode"] if safe_mode else []),
+            repo_root_validated=True,
+            rules_summary={
+                "focus": [{"type": r.type, "value": r.value} for r in cfg.rules.focus],
+                "avoid": [{"type": r.type, "value": r.value} for r in cfg.rules.avoid],
+            },
         ).model_dump(mode="json")
 
     for filename, payload in payloads.items():
@@ -92,7 +127,7 @@ def _write_prerecon_artifacts(
 ) -> list[Path]:
     phase_dir = store.phase_dir("prerecon")
     try:
-        report = build_prerecon_report(
+        report, markdown_content = build_prerecon_report(
             workspace_root=workspace_root,
             workspace=workspace,
             run_id=run_id,
@@ -113,12 +148,9 @@ def _write_prerecon_artifacts(
     if not validate_pre_recon(pre_recon_path):
         raise ApplicationError("Invalid prerecon artifact generated.", type="invalid_prerecon_output", non_retryable=True)
 
-    # Write markdown artifact (primary deliverable for pentesters)
-    from adversa.prerecon.reports import generate_prerecon_markdown
-
-    markdown_content = generate_prerecon_markdown(report)
+    # Write markdown artifact — agent-generated, written directly
     markdown_path = phase_dir / "pre_recon_analysis.md"
-    markdown_path.write_text(markdown_content, encoding="utf-8")
+    markdown_path.write_text(markdown_content or "# Pre-Recon Analysis\n\n_No content returned by agent._", encoding="utf-8")
 
     # Write evidence baseline
     evidence_path = phase_dir / "evidence" / "baseline.json"
@@ -219,11 +251,9 @@ async def _write_recon_artifacts(
     effective_config_path: str,
 ) -> list[Path]:
     """Write recon attack surface map artifacts."""
-    from adversa.recon.reports import generate_recon_markdown
-
     phase_dir = store.phase_dir("recon")
     try:
-        report = await build_recon_report(
+        report, markdown_content = await build_recon_report(
             workspace_root=workspace_root,
             workspace=workspace,
             run_id=run_id,
@@ -244,9 +274,8 @@ async def _write_recon_artifacts(
     if not validate_recon(recon_path):
         raise ApplicationError("Invalid recon artifact generated.", type="invalid_recon_output", non_retryable=True)
 
-    markdown_content = generate_recon_markdown(report)
     markdown_path = phase_dir / "recon_analysis.md"
-    markdown_path.write_text(markdown_content, encoding="utf-8")
+    markdown_path.write_text(markdown_content or "# Recon Analysis\n\n_No content returned by agent._", encoding="utf-8")
 
     evidence_path = phase_dir / "evidence" / "baseline.json"
     evidence_path.write_text(
@@ -344,6 +373,62 @@ async def _write_vuln_artifacts(
         encoding="utf-8",
     )
     return [findings_path, markdown_path, risk_path, evidence_path]
+
+
+def _write_report_artifacts(
+    store: ArtifactStore,
+    *,
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    repo_path: str,
+    url: str,
+    effective_config_path: str,
+) -> tuple[list[Path], dict]:
+    """Write report phase artifacts (pure Python synthesis, no LLM/Playwright).
+
+    Returns (paths, result) where result is the dict from build_report().
+    """
+    phase_dir = store.phase_dir("report")
+
+    result = build_report(
+        workspace_root=workspace_root,
+        workspace=workspace,
+        run_id=run_id,
+        repo_path=repo_path,
+        url=url,
+        config_path=effective_config_path,
+    )
+
+    report_path = phase_dir / "report.md"
+    report_path.write_text(result["report_md"], encoding="utf-8")
+
+    exec_path = phase_dir / "exec_summary.md"
+    exec_path.write_text(result["exec_summary_md"], encoding="utf-8")
+
+    retest_plan = result["retest_plan"]
+    retest_path = phase_dir / "retest_plan.json"
+    retest_path.write_text(retest_plan.model_dump_json(indent=2), encoding="utf-8")
+    if not validate_retest_plan(retest_path):
+        raise ApplicationError("Invalid retest plan generated.", type="invalid_report_output", non_retryable=True)
+
+    findings_summary = result["findings_summary"]
+    evidence_path = phase_dir / "evidence" / "baseline.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "target_url": retest_plan.target_url,
+                "generated_at": retest_plan.generated_at,
+                "total_findings": retest_plan.total_findings,
+                "findings_summary": findings_summary,
+                "retest_steps": [step.model_dump(mode="json") for step in retest_plan.retest_steps],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    return [report_path, exec_path, retest_path, evidence_path], result
 
 
 @activity.defn
@@ -456,7 +541,8 @@ async def run_phase_activity(
     }
     extra_files: list[Path] = []
     if phase == "prerecon":
-        extra_files = _write_prerecon_artifacts(
+        extra_files = await asyncio.to_thread(
+            _write_prerecon_artifacts,
             store,
             workspace_root=workspace_root,
             workspace=workspace,
@@ -625,6 +711,48 @@ async def run_phase_activity(
             "warnings": vuln_payload.get("warnings", []),
         }
 
+    _report_result: dict = {}
+    if phase == "report":
+        extra_files, _report_result = await asyncio.to_thread(
+            _write_report_artifacts,
+            store,
+            workspace_root=workspace_root,
+            workspace=workspace,
+            run_id=run_id,
+            repo_path=repo_path,
+            url=url,
+            effective_config_path=effective_config_path,
+        )
+        retest_plan = _report_result["retest_plan"]
+        fs = _report_result["findings_summary"]
+        critical_count = fs["critical"]
+        high_count = fs["high"]
+        phase_summary = (
+            f"Report generated: {fs['total']} findings "
+            f"({critical_count} critical, {high_count} high). "
+            f"Retest plan: {len(retest_plan.retest_steps)} steps."
+        )
+        phase_data["agent_runtime"] = {
+            "status": "completed",
+            "agent_name": "adversa-report",
+            "middleware": agent_execution.middleware,
+            "executed": True,
+            "runner": "synthesis",
+        }
+        evidence = [
+            EvidenceRef(
+                id="report-baseline",
+                path="report/evidence/baseline.json",
+                note="Report baseline with all findings, retest plan, and secure vectors.",
+            )
+        ]
+        phase_data["report"] = {
+            "total_findings": fs["total"],
+            "critical_count": critical_count,
+            "high_count": high_count,
+            "retest_step_count": len(retest_plan.retest_steps),
+        }
+
     output = PhaseOutput(
         phase=phase,
         summary=phase_summary,
@@ -742,7 +870,29 @@ async def run_phase_activity(
             encoding="utf-8",
         )
 
-    _REAL_PHASES = ("prerecon", "netdisc", "recon", "vuln")
+    if phase == "report" and _report_result:
+        fs = _report_result["findings_summary"]
+        retest_plan = _report_result["retest_plan"]
+        files["coverage"].write_text(
+            json.dumps(
+                {
+                    "phase": "report",
+                    "status": "complete",
+                    "total_findings": fs["total"],
+                    "critical_count": fs["critical"],
+                    "high_count": fs["high"],
+                    "medium_count": fs["medium"],
+                    "low_count": fs["low"],
+                    "info_count": fs["info"],
+                    "externally_exploitable_count": fs["externally_exploitable"],
+                    "retest_step_count": len(retest_plan.retest_steps),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    _REAL_PHASES = ("prerecon", "netdisc", "recon", "vuln", "report")
     evidence_path = store.phase_dir(phase) / "evidence" / "stub.txt"
     if phase not in _REAL_PHASES:
         evidence_path.write_text("evidence", encoding="utf-8")
@@ -754,6 +904,7 @@ async def run_phase_activity(
             url=url,
             repo_path=repo_path,
             safe_mode=cfg.safety.safe_mode,
+            workspace=workspace,
         )
     index_paths = [*files.values(), *extra_files]
     if phase not in _REAL_PHASES:
@@ -825,7 +976,7 @@ def classify_provider_error(exc: Exception) -> LLMProviderError:
     msg = str(exc).lower()
     if any(k in msg for k in ["401", "invalid api key", "credits", "quota"]):
         return LLMProviderError(str(exc), LLMErrorKind.CONFIG_REQUIRED)
-    if any(k in msg for k in ["429", "timeout", "temporarily unavailable"]):
+    if any(k in msg for k in ["429", "timeout", "temporarily unavailable", "structured_response", "1210", "invalid api parameter", "badrequest", "not found in the current page snapshot", "try capturing new snapshot", "500", "server_error", "internalservererror", "unknown error in the model inference"]):
         return LLMProviderError(str(exc), LLMErrorKind.TRANSIENT)
     return LLMProviderError(str(exc), LLMErrorKind.FATAL)
 

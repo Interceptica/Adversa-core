@@ -9,8 +9,10 @@ from urllib.parse import urljoin
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.tools import ToolException
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from adversa.agent_runtime.context import AdversaAgentContext
 from adversa.config.load import load_config
@@ -36,11 +38,13 @@ class RulesGuardrailMiddleware(AgentMiddleware):
         context: AdversaAgentContext,
         compiled_rules: list[CompiledRule] | None = None,
         allowed_repo_virtual_prefix: str | None = None,
+        allowed_output_virtual_prefix: str | None = None,
     ):
         self._context = context
         self._compiled_rules = compiled_rules or compile_rules(load_config(context.config_path))
         self._audit = AuditLogger(context.logs_dir)
         self._allowed_repo_virtual_prefix = allowed_repo_virtual_prefix
+        self._allowed_output_virtual_prefix = allowed_output_virtual_prefix
         context.evidence_dir.mkdir(parents=True, exist_ok=True)
 
     def wrap_model_call(
@@ -53,6 +57,60 @@ class RulesGuardrailMiddleware(AgentMiddleware):
         if system_message is not None and system_message.text == prompt:
             return handler(request)
         return handler(request.override(system_message=SystemMessage(content=prompt)))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Any],
+    ) -> Any:
+        prompt = self._policy_prompt()
+        system_message = request.system_message
+        if system_message is not None and system_message.text == prompt:
+            return await handler(request)
+        return await handler(request.override(system_message=SystemMessage(content=prompt)))
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Any],
+    ) -> Any:
+        filesystem_violation = self._check_filesystem_boundary(request)
+        if filesystem_violation:
+            return self._blocked_tool_message(request, filesystem_violation)
+        boundary = self._normalize_tool_call(request)
+        target = RuntimeTarget.from_inputs(
+            phase=self._context.phase,
+            url=boundary.url,
+            repo_path=boundary.repo_path,
+            method=boundary.method,
+        )
+        decision = evaluate_runtime_boundary(target, self._compiled_rules)
+        if decision.blocked_reason:
+            self._record_denial(request, boundary, target, decision.blocked_reason, decision.applied_rules)
+            return self._blocked_tool_message(request, decision.blocked_reason)
+        try:
+            return await handler(request)
+        except ValidationError as exc:
+            # Pydantic ValidationError (e.g. missing required tool arg) is not a
+            # ToolException so LangGraph re-raises it, crashing the agent.
+            # Convert to a ToolMessage so the model receives feedback and can retry.
+            return ToolMessage(
+                content=f"Tool call validation error: {exc}",
+                tool_call_id=request.tool_call["id"],
+                status="error",
+                name=request.tool_call["name"],
+            )
+        except ToolException as exc:
+            # ToolException from Playwright MCP (e.g. stale element ref "Ref e5 not found")
+            # propagates through LangGraph's _default_handle_tool_errors which re-raises
+            # instead of converting to a ToolMessage. Catch it here so the agent receives
+            # the error and can recover (e.g. take a new snapshot before retrying).
+            return ToolMessage(
+                content=f"Tool error: {exc}",
+                tool_call_id=request.tool_call["id"],
+                status="error",
+                name=request.tool_call["name"],
+            )
 
     def wrap_tool_call(
         self,
@@ -118,6 +176,8 @@ class RulesGuardrailMiddleware(AgentMiddleware):
             url=url,
         )
 
+    _WRITE_TOOLS: frozenset[str] = frozenset({"write_file", "create_file", "edit_file", "patch_file"})
+
     def _check_filesystem_boundary(self, request: ToolCallRequest) -> str | None:
         if not self._allowed_repo_virtual_prefix:
             return None
@@ -134,15 +194,36 @@ class RulesGuardrailMiddleware(AgentMiddleware):
         if tool_name == "grep":
             candidate_paths.append(args.get("glob"))
 
+        is_write = tool_name in self._WRITE_TOOLS
+
         for candidate in candidate_paths:
             if candidate is None:
                 continue
-            if not self._is_allowed_repo_virtual_path(str(candidate)):
+            candidate_str = str(candidate)
+            # Write tools may only write to the designated output prefix, never to the repo.
+            # Read tools may access both the repo prefix and the output prefix.
+            if self._allowed_output_virtual_prefix and self._is_under_prefix(
+                candidate_str, self._allowed_output_virtual_prefix
+            ):
+                continue
+            if not is_write and self._is_allowed_repo_virtual_path(candidate_str):
+                continue
+            if is_write:
                 return (
-                    f"Tool '{tool_name}' path '{candidate}' is outside the authorized repo prefix "
-                    f"'{self._allowed_repo_virtual_prefix}'."
+                    f"Tool '{tool_name}' cannot write to '{candidate}'. "
+                    f"Writes are restricted to '{self._allowed_output_virtual_prefix}'. "
+                    "Do not write files to the repo directory."
                 )
+            return (
+                f"Tool '{tool_name}' path '{candidate}' is outside the authorized repo prefix "
+                f"'{self._allowed_repo_virtual_prefix}'."
+            )
         return None
+
+    def _is_under_prefix(self, candidate: str, prefix: str) -> bool:
+        normalized = candidate if candidate.startswith("/") else "/" + candidate
+        normalized_prefix = prefix if prefix.startswith("/") else "/" + prefix
+        return PurePosixPath(normalized).is_relative_to(PurePosixPath(normalized_prefix))
 
     def _is_allowed_repo_virtual_path(self, candidate: str) -> bool:
         if not candidate:
@@ -202,8 +283,10 @@ def load_runtime_boundary_middleware(
     context: AdversaAgentContext,
     *,
     allowed_repo_virtual_prefix: str,
+    allowed_output_virtual_prefix: str | None = None,
 ) -> RulesGuardrailMiddleware:
     return RulesGuardrailMiddleware(
         context=context,
         allowed_repo_virtual_prefix=allowed_repo_virtual_prefix,
+        allowed_output_virtual_prefix=allowed_output_virtual_prefix,
     )

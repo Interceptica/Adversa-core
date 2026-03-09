@@ -8,11 +8,18 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
 from adversa.state.models import PHASES, WorkflowInput, WorkflowStatus
-from adversa.workflow_temporal.activities import run_phase_activity
+
+# Activities import heavy non-deterministic deps (urllib3, httpx, deepagents).
+# Mark as pass-through so the sandbox doesn't try to validate them.
+with workflow.unsafe.imports_passed_through():
+    from adversa.workflow_temporal.activities import run_phase_activity
 
 
 PHASE_ACTIVITY_TIMEOUT = timedelta(minutes=10)
+AGENT_PHASE_ACTIVITY_TIMEOUT = timedelta(minutes=30)
 VULN_PHASE_ACTIVITY_TIMEOUT = timedelta(minutes=30)
+
+_AGENT_PHASES = {"prerecon", "recon", "vuln", "report"}
 PHASE_ACTIVITY_RETRY_POLICY = RetryPolicy(
     initial_interval=timedelta(seconds=2),
     backoff_coefficient=2.0,
@@ -98,7 +105,7 @@ class AdversaRunWorkflow:
     @workflow.run
     async def run(self, payload: dict) -> dict:
         inp = WorkflowInput.model_validate(payload)
-        self.engine.status.artifact_index_path = f"{inp.workspace}/{inp.run_id}/artifacts/index.json"
+        self.engine.status.artifact_index_path = f"{inp.workspace_root}/{inp.workspace}/{inp.run_id}/artifacts/index.json"
 
         for phase in PHASES:
             phase_done = False
@@ -111,17 +118,19 @@ class AdversaRunWorkflow:
                     break
 
                 try:
-                    timeout = VULN_PHASE_ACTIVITY_TIMEOUT if phase == "vuln" else PHASE_ACTIVITY_TIMEOUT
+                    timeout = AGENT_PHASE_ACTIVITY_TIMEOUT if phase in _AGENT_PHASES else PHASE_ACTIVITY_TIMEOUT
                     result = await workflow.execute_activity(
                         run_phase_activity,
-                        inp.workspace,
-                        inp.workspace,
-                        inp.run_id,
-                        inp.repo_path,
-                        inp.url,
-                        phase,
-                        inp.force,
-                        inp.effective_config_path,
+                        args=[
+                            inp.workspace_root,
+                            inp.workspace,
+                            inp.run_id,
+                            inp.repo_path,
+                            inp.url,
+                            phase,
+                            inp.force,
+                            inp.effective_config_path,
+                        ],
                         start_to_close_timeout=timeout,
                         retry_policy=PHASE_ACTIVITY_RETRY_POLICY,
                     )
