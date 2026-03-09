@@ -804,6 +804,9 @@ class WorkflowStatus(BaseModel):
     )
     paused: bool = Field(default=False, description="Whether the workflow is paused by signal and waiting to resume.")
     canceled: bool = Field(default=False, description="Whether the workflow has been canceled.")
+    started_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp when the workflow started executing.")
+    phase_started_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp when the current phase started.")
+    remediation_hint: str | None = Field(default=None, description="Human-readable recovery steps when the workflow is in an error or waiting state.")
 
 
 PHASES = ["intake", "prerecon", "netdisc", "recon", "vuln", "report"]

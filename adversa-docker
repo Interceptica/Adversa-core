@@ -193,47 +193,64 @@ cmd_start() {
   local original_url="${URL}"
   URL="$(rewrite_url "${URL}")"
   if [ "${URL}" != "${original_url}" ]; then
-    _yellow "URL rewritten for Docker: ${original_url} → ${URL}"
+    _yellow "Note: URL rewritten for Docker networking: ${original_url} → ${URL}"
   fi
 
-  # Auto-generate workspace name if not provided
+  # Auto-generate workspace or detect resume
+  local is_resume=false
   if [ -z "${WORKSPACE:-}" ]; then
     local slug
     slug="$(url_slug "${original_url}")"
     WORKSPACE="${slug}_adversa-$(date +%s%3N 2>/dev/null || date +%s)000"
-    _yellow "Auto-generated workspace: ${WORKSPACE}"
   else
-    # Check if this workspace already exists → resume mode
     if [ -d "${RUNS_DIR}/${WORKSPACE}" ]; then
-      _yellow "Workspace '${WORKSPACE}' already exists — resuming..."
+      is_resume=true
     fi
   fi
 
   mkdir -p "${RUNS_DIR}" "${SCRIPT_DIR}/logs"
 
   ensure_containers
-
-  _bold "Submitting scan..."
-  _yellow "  URL:       ${URL}"
-  _yellow "  Repo:      ${REPO}"
-  _yellow "  Workspace: ${WORKSPACE}"
+  _green "✓ Systems initialized."
   echo ""
+  echo "Connecting to Temporal at temporal:7233..."
 
-  docker compose -f "${COMPOSE_FILE}" exec -T adversa \
+  # Run adversa and capture output — CLI prints "Started workflow adversa-<ws>-<run_id>"
+  local run_output
+  run_output=$(docker compose -f "${COMPOSE_FILE}" exec -T adversa \
     uv run python -m adversa run \
       --repo "repos/${REPO}" \
       --url "${URL}" \
       --workspace "${WORKSPACE}" \
-      --i-acknowledge
+      --i-acknowledge 2>&1) || {
+    printf '%s\n' "${run_output}" >&2
+    _die "Scan submission failed."
+  }
 
+  # Extract workflow_id: matches "adversa-<workspace>-<12hex>"
+  local workflow_id
+  workflow_id=$(printf '%s' "${run_output}" | grep -o 'adversa-[^[:space:]]*' | head -1)
+  if [ -z "${workflow_id}" ]; then
+    workflow_id="${WORKSPACE}"
+  fi
+
+  if [ "${is_resume}" = "true" ]; then
+    _green "✓ Workflow resumed: ${workflow_id}"
+  else
+    _green "✓ Workflow started: ${workflow_id}"
+  fi
   echo ""
-  _green "Scan submitted. Workflow is running."
-  _green "Temporal UI: http://localhost:8080"
+  printf "  Target:      %s\n" "${original_url}"
+  printf "  Repository:  /repos/%s\n" "${REPO}"
+  printf "  Workspace:   %s\n" "${WORKSPACE}"
   echo ""
-  _bold "Follow logs:"
-  echo "  adversa-docker logs ID=${WORKSPACE} FOLLOW=true"
-  _bold "Check status:"
-  echo "  adversa-docker workspaces"
+  echo "Monitor progress:"
+  printf "  Web UI:  http://localhost:8080/namespaces/default/workflows/%s\n" "${workflow_id}"
+  printf "  Logs:    adversa-docker logs ID=%s FOLLOW=true\n" "${WORKSPACE}"
+  echo ""
+  echo "Output:"
+  printf "  Reports: ./runs/%s/\n" "${WORKSPACE}"
+  echo ""
 }
 
 cmd_workspaces() {
@@ -243,8 +260,7 @@ cmd_workspaces() {
   fi
 
   _bold "Workspaces:"
-  printf "  %-30s  %-10s  %-12s  %-8s  %s\n" "WORKSPACE" "RUN ID" "STATUS" "COMPLETED" "WORKFLOW ID"
-  printf "  %-30s  %-10s  %-12s  %-8s  %s\n" "──────────────────────────────" "──────────" "────────────" "────────" "──────────────────────────────────────"
+  echo ""
 
   for ws_dir in "${RUNS_DIR}"/*/; do
     [ -d "${ws_dir}" ] || continue
@@ -262,23 +278,27 @@ cmd_workspaces() {
     done
 
     if [ -z "${manifest_file}" ]; then
-      printf "  %-30s  %-10s  %-12s  %-8s  %s\n" "${ws_name}" "-" "no-manifest" "-" "-"
+      printf "  %-30s  no-manifest\n" "${ws_name}"
       continue
     fi
 
-    # Derive status and phase info from the fields that actually exist in the manifest
+    # Parse manifest fields
     local info
     info="$(python3 -c "
-import json
+import json, sys
 d = json.load(open('${manifest_file}'))
 canceled  = d.get('canceled', False)
 paused    = d.get('paused', False)
 waiting   = d.get('waiting_for_config', False)
-error     = d.get('last_error')
+error     = d.get('last_error') or ''
 completed = d.get('completed_phases', [])
+wf_id     = d.get('workflow_id', '')
+url       = d.get('url', '')
 
 if canceled:
     status = 'canceled'
+elif 'report' in completed:
+    status = 'completed'
 elif error:
     status = 'failed'
 elif paused:
@@ -288,16 +308,36 @@ elif waiting:
 else:
     status = 'running'
 
-print(status + '|' + ','.join(completed) + '|' + d.get('workflow_id',''))
-" 2>/dev/null || echo "unknown|-|-")"
+phase_str = ' → '.join(completed) if completed else 'none'
+hint = error[:80] if error else ''
+print('|'.join([status, phase_str, wf_id, url, hint]))
+" 2>/dev/null || echo "unknown|none|||")"
 
-    local status completed_phases workflow_id
-    status="${info%%|*}"; info="${info#*|}"
-    completed_phases="${info%%|*}"
-    workflow_id="${info#*|}"
+    local status phase_str workflow_id target hint
+    status="${info%%|*}";    info="${info#*|}"
+    phase_str="${info%%|*}"; info="${info#*|}"
+    workflow_id="${info%%|*}"; info="${info#*|}"
+    target="${info%%|*}"
+    hint="${info#*|}"
 
-    printf "  %-30s  %-10s  %-12s  %-8s  %s\n" \
-      "${ws_name}" "${latest_run:0:10}" "${status}" "${completed_phases:-none}" "${workflow_id}"
+    # Status colour
+    local status_label
+    case "${status}" in
+      completed)   status_label="$(_green "${status}")" ;;
+      running)     status_label="$(_yellow "${status}")" ;;
+      failed|canceled) status_label="$(_red "${status}")" ;;
+      *)           status_label="${status}" ;;
+    esac
+
+    printf "  %s\n" "${ws_name}"
+    printf "    Status:     %s\n" "${status_label}"
+    [ -n "${target}" ]      && printf "    Target:     %s\n" "${target}"
+    printf "    Phases:     %s\n" "${phase_str}"
+    [ -n "${workflow_id}" ] && printf "    Web UI:     http://localhost:8080/namespaces/default/workflows/%s\n" "${workflow_id}"
+    [ -n "${hint}" ]        && printf "    Error:      %s\n" "${hint}"
+    printf "    Logs:       adversa-docker logs ID=%s FOLLOW=true\n" "${ws_name}"
+    printf "    Reports:    ./runs/%s/\n" "${ws_name}"
+    echo ""
   done
 }
 

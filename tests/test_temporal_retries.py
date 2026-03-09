@@ -62,7 +62,8 @@ def test_build_worker_registers_expected_workflow_and_activities() -> None:
 
     assert worker.task_queue == TASK_QUEUE
     assert len(worker.workflows) == 1
-    assert len(worker.activities) == 2
+    # 6 per-phase wrappers + run_phase_activity (compat) + provider_health_check = 8
+    assert len(worker.activities) == 8
 
 
 def test_run_worker_builds_and_runs_worker(monkeypatch) -> None:  # type: ignore[no-untyped-def]

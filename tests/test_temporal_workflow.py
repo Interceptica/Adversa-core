@@ -1,11 +1,32 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 
 from adversa.state.models import PHASES
 from adversa.workflow_temporal.workflows import AdversaRunWorkflow, WorkflowEngine, workflow
+
+
+def _fake_now() -> datetime:
+    return datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+
+# Maps per-phase activity function names → phase string
+_ACTIVITY_PHASE: dict[str, str] = {
+    "run_intake_activity": "intake",
+    "run_prerecon_activity": "prerecon",
+    "run_netdisc_activity": "netdisc",
+    "run_recon_activity": "recon",
+    "run_vuln_activity": "vuln",
+    "run_report_activity": "report",
+}
+
+
+def _phase_from_func(func: object) -> str | None:
+    """Return the phase name for a per-phase activity function, or None for others."""
+    return _ACTIVITY_PHASE.get(getattr(func, "__name__", ""))
 
 
 def _payload() -> dict:
@@ -49,7 +70,9 @@ def test_run_tracks_all_phases_and_status(monkeypatch: pytest.MonkeyPatch) -> No
     calls: list[str] = []
 
     async def fake_execute_activity(*args, **kwargs):  # type: ignore[no-untyped-def]
-        phase = kwargs["args"][5]
+        phase = _phase_from_func(args[0])
+        if phase is None:  # provider_health_check or other
+            return None
         calls.append(phase)
         return {"status": "completed"}
 
@@ -58,6 +81,7 @@ def test_run_tracks_all_phases_and_status(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(workflow, "execute_activity", fake_execute_activity)
     monkeypatch.setattr(workflow, "sleep", fake_sleep)
+    monkeypatch.setattr(workflow, "now", _fake_now)
 
     wf = AdversaRunWorkflow()
     status = asyncio.run(wf.run(_payload()))
@@ -68,13 +92,16 @@ def test_run_tracks_all_phases_and_status(monkeypatch: pytest.MonkeyPatch) -> No
     assert status["artifact_index_path"] == "runs/ws/run-001/artifacts/index.json"
     assert status["waiting_for_config"] is False
     assert status["canceled"] is False
+    assert status["started_at"] is not None
 
 
 def test_update_config_unblocks_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts = {"count": 0}
 
     async def fake_execute_activity(*args, **kwargs):  # type: ignore[no-untyped-def]
-        phase = kwargs["args"][5]
+        phase = _phase_from_func(args[0])
+        if phase is None:
+            return None
         if phase == "intake" and attempts["count"] == 0:
             attempts["count"] += 1
             raise RuntimeError("401 Unauthorized")
@@ -92,6 +119,7 @@ def test_update_config_unblocks_waiting(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(workflow, "execute_activity", fake_execute_activity)
     monkeypatch.setattr(workflow, "wait_condition", fake_wait_condition)
     monkeypatch.setattr(workflow, "sleep", fake_sleep)
+    monkeypatch.setattr(workflow, "now", _fake_now)
 
     wf = AdversaRunWorkflow()
     status = asyncio.run(wf.run(_payload()))
@@ -106,7 +134,9 @@ def test_cancel_stops_phase_execution(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     async def fake_execute_activity(*args, **kwargs):  # type: ignore[no-untyped-def]
-        phase = kwargs["args"][5]
+        phase = _phase_from_func(args[0])
+        if phase is None:
+            return None
         calls.append(phase)
         if phase == "intake":
             wf.cancel()
@@ -117,6 +147,7 @@ def test_cancel_stops_phase_execution(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(workflow, "execute_activity", fake_execute_activity)
     monkeypatch.setattr(workflow, "sleep", fake_sleep)
+    monkeypatch.setattr(workflow, "now", _fake_now)
 
     wf = AdversaRunWorkflow()
     status = asyncio.run(wf.run(_payload()))

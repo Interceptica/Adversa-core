@@ -431,8 +431,7 @@ def _write_report_artifacts(
     return [report_path, exec_path, retest_path, evidence_path], result
 
 
-@activity.defn
-async def run_phase_activity(
+async def _run_phase_impl(
     workspace_root: str,
     workspace: str,
     run_id: str,
@@ -526,6 +525,14 @@ async def run_phase_activity(
         }
     )
 
+    # Heartbeat loop: keeps Temporal informed that the activity is still alive
+    # during long-running LLM/tool phases so hung activities are detected quickly.
+    async def _heartbeat_loop() -> None:
+        while True:
+            activity.heartbeat()
+            await asyncio.sleep(5)
+
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
     evidence = [EvidenceRef(id=f"{phase}-e1", path=f"{phase}/evidence/stub.txt", note="stub evidence")]
     phase_summary = f"Stub {phase} phase completed in safe mode."
     phase_data = {
@@ -934,7 +941,48 @@ async def run_phase_activity(
             "workflow_id": manifest.workflow_id,
         }
     )
+    heartbeat_task.cancel()
     return {"phase": phase, "status": "completed"}
+
+
+# Per-phase activity wrappers — each has a distinct registered name so the
+# Temporal UI shows "run_prerecon_activity" instead of the generic
+# "run_phase_activity" for every phase.
+
+@activity.defn(name="run_intake_activity")
+async def run_intake_activity(workspace_root: str, workspace: str, run_id: str, repo_path: str, url: str, force: bool, effective_config_path: str = "adversa.toml") -> dict:
+    return await _run_phase_impl(workspace_root, workspace, run_id, repo_path, url, "intake", force, effective_config_path)
+
+
+@activity.defn(name="run_prerecon_activity")
+async def run_prerecon_activity(workspace_root: str, workspace: str, run_id: str, repo_path: str, url: str, force: bool, effective_config_path: str = "adversa.toml") -> dict:
+    return await _run_phase_impl(workspace_root, workspace, run_id, repo_path, url, "prerecon", force, effective_config_path)
+
+
+@activity.defn(name="run_netdisc_activity")
+async def run_netdisc_activity(workspace_root: str, workspace: str, run_id: str, repo_path: str, url: str, force: bool, effective_config_path: str = "adversa.toml") -> dict:
+    return await _run_phase_impl(workspace_root, workspace, run_id, repo_path, url, "netdisc", force, effective_config_path)
+
+
+@activity.defn(name="run_recon_activity")
+async def run_recon_activity(workspace_root: str, workspace: str, run_id: str, repo_path: str, url: str, force: bool, effective_config_path: str = "adversa.toml") -> dict:
+    return await _run_phase_impl(workspace_root, workspace, run_id, repo_path, url, "recon", force, effective_config_path)
+
+
+@activity.defn(name="run_vuln_activity")
+async def run_vuln_activity(workspace_root: str, workspace: str, run_id: str, repo_path: str, url: str, force: bool, effective_config_path: str = "adversa.toml") -> dict:
+    return await _run_phase_impl(workspace_root, workspace, run_id, repo_path, url, "vuln", force, effective_config_path)
+
+
+@activity.defn(name="run_report_activity")
+async def run_report_activity(workspace_root: str, workspace: str, run_id: str, repo_path: str, url: str, force: bool, effective_config_path: str = "adversa.toml") -> dict:
+    return await _run_phase_impl(workspace_root, workspace, run_id, repo_path, url, "report", force, effective_config_path)
+
+
+# Keep old name registered for backwards compatibility with in-flight workflows
+@activity.defn
+async def run_phase_activity(workspace_root: str, workspace: str, run_id: str, repo_path: str, url: str, phase: str, force: bool, effective_config_path: str = "adversa.toml") -> dict:
+    return await _run_phase_impl(workspace_root, workspace, run_id, repo_path, url, phase, force, effective_config_path)
 
 
 @activity.defn

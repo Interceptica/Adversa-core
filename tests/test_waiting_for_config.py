@@ -1,10 +1,14 @@
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from temporalio.exceptions import ApplicationError
 
 from adversa.workflow_temporal.activities import to_activity_error
 from adversa.workflow_temporal.workflows import AdversaRunWorkflow, WorkflowEngine, workflow
+
+
+def _fake_now() -> datetime:
+    return datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
 
 
 def test_waiting_for_config_state() -> None:
@@ -28,6 +32,7 @@ def test_typed_config_required_error_moves_workflow_to_waiting(monkeypatch) -> N
 
     monkeypatch.setattr(workflow, "execute_activity", fake_execute_activity)
     monkeypatch.setattr(workflow, "wait_condition", fake_wait_condition)
+    monkeypatch.setattr(workflow, "now", _fake_now)
 
     wf = AdversaRunWorkflow()
     payload = {
