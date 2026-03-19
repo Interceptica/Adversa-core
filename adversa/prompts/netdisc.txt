@@ -19,7 +19,15 @@ Hard boundaries:
 Available tools (via the bash tool):
 - subfinder  — passive subdomain enumeration
 - httpx       — HTTP fingerprinting and live host checking
+  CORRECT syntax (ProjectDiscovery httpx v1.8+):
+    echo "http://host:port" | httpx -title -sc -td -silent
+    httpx -target http://host:port -title -sc -td -web-server -silent
+  Short flags only — long aliases (-status-code, -tech-detect, -u) are NOT supported and will error.
+  Add -follow-redirects to trace redirect chains.
 - openssl     — TLS certificate inspection
+  NOTE: openssl s_client hangs on non-TLS ports. Always add a timeout:
+    timeout 5 openssl s_client -connect host:port -brief 2>&1 | head -20
+  If it errors with "wrong version number" the port is plain HTTP, not HTTPS.
 - whatweb     — web technology detection
 - nuclei      — safe template scanning (permitted tags only — see above)
 - nmap        — TCP port scanning (only if active_scanning_enabled is true)

@@ -17,6 +17,7 @@ from deepagents import create_deep_agent
 
 from adversa.agent_runtime.context import AdversaAgentContext
 from adversa.agent_runtime.middleware import load_rules_middleware
+from adversa.artifacts.store import ArtifactStore
 from adversa.config.load import load_config
 from adversa.llm.providers import ProviderClient
 from adversa.netdisc.bash_tool import ScopedBashTool
@@ -28,6 +29,8 @@ from adversa.state.models import (
     ServiceFingerprint,
     TLSObservation,
 )
+from adversa.state.schemas import validate_network_discovery
+from adversa.utils.agent_output import extract_json_from_messages, read_agent_written_json
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -125,6 +128,7 @@ def _build_netdisc_request(
     scope: ScopeContract,
     passive_discovery_enabled: bool,
     active_scanning_enabled: bool,
+    output_json_path: str | None = None,
 ) -> str:
     from urllib.parse import urlparse as _urlparse
     _parsed = _urlparse(url)
@@ -140,6 +144,16 @@ def _build_netdisc_request(
         "passive_discovery_enabled": passive_discovery_enabled,
         "active_scanning_enabled": active_scanning_enabled,
     }
+    output_instruction = (
+        f"\n## Output\n"
+        f"When discovery is complete, call write_file with:\n"
+        f"  file_path: {output_json_path}\n"
+        f"  content: <NetworkDiscoveryReport JSON — see schema below>\n\n"
+        f"NetworkDiscoveryReport JSON schema: populate all array fields from discovery results.\n"
+        f"After writing, stop.\n"
+        if output_json_path
+        else ""
+    )
     return (
         "Run network discovery for Adversa.\n\n"
         "Authorized target:\n"
@@ -159,6 +173,7 @@ def _build_netdisc_request(
         "- Populate the full NetworkDiscoveryReport with discovered hosts, fingerprints, TLS, and ports.\n"
         "- Add warnings for any tools that fail or are not installed.\n"
         "- Set passive_discovery_enabled and active_scanning_enabled in the report.\n"
+        f"{output_instruction}"
     )
 
 
@@ -279,6 +294,11 @@ async def build_network_discovery_report(
         config_path=config_path,
     )
 
+    # Compute virtual output path for the agent to write the JSON report directly.
+    output_json_virtual_path, output_json_disk_path = _compute_netdisc_output_path(
+        workspace_root, workspace, run_id
+    )
+
     scoped_bash = ScopedBashTool(scope=scope)
     model = ProviderClient(cfg.provider).build_chat_model(temperature=0)
     system_prompt = NETDISC_PROMPT_PATH.read_text(encoding="utf-8")
@@ -288,7 +308,6 @@ async def build_network_discovery_report(
         tools=[scoped_bash],
         system_prompt=system_prompt,
         middleware=[load_rules_middleware(context)],
-        response_format=NetworkDiscoveryReport,
         name="adversa-netdisc",
     )
 
@@ -304,22 +323,39 @@ async def build_network_discovery_report(
                         scope=scope,
                         passive_discovery_enabled=passive_discovery_enabled,
                         active_scanning_enabled=active_scanning_enabled,
+                        output_json_path=output_json_virtual_path,
                     ),
                 }
             ]
         }
     )
 
-    structured = result.get("structured_response")
+    # Primary: read the JSON file the agent wrote to disk.
+    structured = None
+    if output_json_disk_path:
+        structured = read_agent_written_json(output_json_disk_path, NetworkDiscoveryReport)
+
+    # Fallback: try to parse NetworkDiscoveryReport JSON from chat messages.
     if structured is None:
-        raise ValueError("DeepAgent netdisc run did not return a structured_response.")
-    if isinstance(structured, NetworkDiscoveryReport):
-        report = structured
-    else:
-        report = NetworkDiscoveryReport.model_validate(structured)
+        structured = extract_json_from_messages(result.get("messages", []), NetworkDiscoveryReport)
+
+    if structured is None:
+        # Graceful degradation: return stub report with warning.
+        structured = NetworkDiscoveryReport(
+            target_url=url,
+            canonical_url=canonical_url,
+            host=host,
+            path=path,
+            passive_discovery_enabled=passive_discovery_enabled,
+            active_scanning_enabled=active_scanning_enabled,
+            warnings=["netdisc agent completed but produced no parseable JSON output."],
+        )
+
+    if not isinstance(structured, NetworkDiscoveryReport):
+        structured = NetworkDiscoveryReport.model_validate(structured)
 
     return _normalize_report(
-        report,
+        structured,
         url=url,
         canonical_url=canonical_url,
         host=host,
@@ -328,3 +364,78 @@ async def build_network_discovery_report(
         passive_discovery_enabled=passive_discovery_enabled,
         active_scanning_enabled=active_scanning_enabled,
     )
+
+
+def _compute_netdisc_output_path(
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+) -> tuple[str | None, Path | None]:
+    """Return (virtual_path, disk_path) for the netdisc JSON output artifact."""
+    ws = Path(workspace_root)
+    if not ws.is_absolute():
+        ws = (PROJECT_ROOT / ws).resolve()
+    disk_path = ws / workspace / run_id / "netdisc" / "network_discovery.json"
+    try:
+        ws_rel = ws.relative_to(PROJECT_ROOT)
+        virtual_path = str(ws_rel / workspace / run_id / "netdisc" / "network_discovery.json")
+        return virtual_path, disk_path
+    except ValueError:
+        return None, disk_path
+
+
+async def write_netdisc_artifacts(
+    store: ArtifactStore,
+    *,
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    repo_path: str,
+    url: str,
+    effective_config_path: str,
+) -> list[Path]:
+    """Run the netdisc agent and write all phase artifacts.
+
+    Returns the list of written paths (network_discovery.json, network_discovery.md,
+    evidence/baseline.json). Raises on agent failure or schema validation errors.
+    """
+    from adversa.netdisc.reports import generate_netdisc_markdown
+
+    phase_dir = store.phase_dir("netdisc")
+
+    report = await build_network_discovery_report(
+        workspace_root=workspace_root,
+        workspace=workspace,
+        run_id=run_id,
+        repo_path=repo_path,
+        url=url,
+        config_path=effective_config_path,
+    )
+
+    network_discovery_path = phase_dir / "network_discovery.json"
+    network_discovery_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    if not validate_network_discovery(network_discovery_path):
+        raise ValueError("Invalid netdisc artifact generated.")
+
+    markdown_content = generate_netdisc_markdown(report)
+    markdown_path = phase_dir / "network_discovery.md"
+    markdown_path.write_text(markdown_content, encoding="utf-8")
+
+    evidence_path = phase_dir / "evidence" / "baseline.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "target_url": report.target_url,
+                "canonical_url": report.canonical_url,
+                "discovered_hosts": [item.model_dump(mode="json") for item in report.discovered_hosts],
+                "service_fingerprints": [item.model_dump(mode="json") for item in report.service_fingerprints],
+                "tls_observations": [item.model_dump(mode="json") for item in report.tls_observations],
+                "port_services": [item.model_dump(mode="json") for item in report.port_services],
+                "scope_inputs": report.scope_inputs,
+                "plan_inputs": report.plan_inputs,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return [network_discovery_path, markdown_path, evidence_path]

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from adversa.config.models import AdversaConfig, ProviderConfig, RunConfig
 from adversa.logging.audit import AuditLogger
 from adversa.logging.redaction import redact_obj, redact_text
 from adversa.workflow_temporal.activities import provider_health_check, run_phase_activity
@@ -55,21 +54,28 @@ def test_phase_activity_emits_audit_logs_per_phase(tmp_path: Path) -> None:
 
 
 def test_provider_health_check_logs_redacted_events(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    cfg = AdversaConfig(
-        provider=ProviderConfig(
-            provider="openai_compatible",
-            model="gpt-4o-mini",
-            api_key_env="OPENAI_API_KEY",
-            base_url="https://example.invalid/v1",
-        ),
-        run=RunConfig(workspace_root=str(tmp_path)),
-    )
-
     import asyncio
 
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    # Write a minimal adversa.toml so load_config reads our custom provider config
+    config_path = tmp_path / "adversa.toml"
+    config_path.write_text(
+        f"""
+[provider]
+provider = "openai_compatible"
+model = "gpt-4o-mini"
+api_key_env = "OPENAI_API_KEY"
+base_url = "https://example.invalid/v1"
+
+[run]
+workspace_root = "{tmp_path.as_posix()}"
+""".strip(),
+        encoding="utf-8",
+    )
+
     try:
-        asyncio.run(provider_health_check(cfg.model_dump()))
+        asyncio.run(provider_health_check(str(config_path)))
     except Exception:
         pass
 

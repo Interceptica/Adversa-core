@@ -121,7 +121,24 @@ repos_root = "{(repo_project_root / 'repos').as_posix()}"
             return {
                 "messages": [
                     type("AIMessage", (), {
-                        "content": "# Pre-Recon Analysis\n\n## Framework Signals\n\n- Next.js app detected\n\n## Candidate Routes\n\n- /users\n- /auth/login\n",
+                        "content": (
+                            "# Pre-Recon Analysis\n\n"
+                            "## Framework Signals\n\n"
+                            "- Next.js app detected (evidence: package.json, evidence_level: high)\n"
+                            "- React 18 frontend framework (evidence: package.json react dependency, evidence_level: high)\n"
+                            "- TypeScript (evidence: tsconfig.json, evidence_level: high)\n\n"
+                            "## Candidate Routes\n\n"
+                            "- /users (kind: api, scope: in_scope, evidence: app/api/users/route.ts)\n"
+                            "- /auth/login (kind: auth, scope: in_scope, evidence: app/api/auth/login/route.ts)\n"
+                            "- /auth/logout (kind: auth, scope: in_scope, evidence: app/api/auth/logout/route.ts)\n\n"
+                            "## Authentication Signals\n\n"
+                            "- JWT token validation middleware detected\n"
+                            "- Session management via httpOnly cookies\n\n"
+                            "## Vulnerability Sinks\n\n"
+                            "- SQL query construction in /api/users handler (potential injection risk)\n\n"
+                            "## Data Flow Patterns\n\n"
+                            "- User credentials flow: form → API → database (encrypted at rest)\n"
+                        ),
                         "additional_kwargs": {},
                     })()
                 ]
@@ -231,7 +248,26 @@ repos_root = "{(tmp_path / 'repos').as_posix()}"
             "# Pre-Recon Analysis\n\nFake markdown content.\n",
         )
 
-    monkeypatch.setattr(workflow_activities, "build_prerecon_report", fake_build_prerecon_report)
+    def fake_write_prerecon_artifacts(store, *, workspace_root, workspace, run_id, repo_path, url, effective_config_path):  # type: ignore[no-untyped-def]
+        report, markdown = fake_build_prerecon_report(
+            workspace_root=workspace_root,
+            workspace=workspace,
+            run_id=run_id,
+            repo_path=repo_path,
+            url=url,
+            config_path=effective_config_path,
+        )
+        phase_dir = store.phase_dir("prerecon")
+        pre_recon_path = phase_dir / "pre_recon.json"
+        pre_recon_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        md_path = phase_dir / "pre_recon_analysis.md"
+        md_path.write_text(markdown, encoding="utf-8")
+        evidence_path = phase_dir / "evidence" / "baseline.json"
+        import json as _json
+        evidence_path.write_text(_json.dumps({}), encoding="utf-8")
+        return [pre_recon_path, md_path, evidence_path]
+
+    monkeypatch.setattr(workflow_activities, "write_prerecon_artifacts", fake_write_prerecon_artifacts)
 
     result = asyncio.run(
         run_phase_activity(

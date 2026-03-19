@@ -11,6 +11,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 
 from adversa.agent_runtime.context import AdversaAgentContext
 from adversa.agent_runtime.middleware import load_runtime_boundary_middleware
+from adversa.artifacts.store import ArtifactStore
 from adversa.config.load import load_config
 from adversa.llm.providers import ProviderClient
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
@@ -25,6 +26,9 @@ from adversa.state.models import (
     SecurityConfigSignal,
     VulnerabilitySink,
 )
+from adversa.state.schemas import validate_pre_recon
+from adversa.utils.agent_output import extract_markdown_from_messages, read_agent_written_file
+from adversa.utils.url import canonical_url as _canonical_url_util
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -73,10 +77,10 @@ def build_prerecon_report(
     )
     model = ProviderClient(cfg.provider).build_chat_model(temperature=0)
 
-    # Output goes inside the repo under <run_id>/ — same tree the agent reads from.
-    # Avoids dual-path confusion (agent reads /repos/x, must write to /runs/.../x).
-    output_virtual_path, disk_output_path = _compute_repo_output_paths(
-        repo_path, run_id, "prerecon.md"
+    # Output goes directly to the final artifact path so the controller doesn't
+    # need to re-copy the file after the agent writes it.
+    output_virtual_path, disk_output_path = _compute_output_paths(
+        workspace_root, workspace, run_id, "prerecon", "pre_recon_analysis.md"
     )
     output_dir_prefix = str(Path(output_virtual_path).parent) if output_virtual_path else None
 
@@ -105,9 +109,9 @@ def build_prerecon_report(
         }
     )
 
-    markdown_content = _read_agent_written_file(disk_output_path)
+    markdown_content = read_agent_written_file(disk_output_path)
     if not markdown_content:
-        markdown_content = _extract_markdown_from_messages(result.get("messages", []))
+        markdown_content = extract_markdown_from_messages(result.get("messages", []))
 
     report = _build_minimal_report(inputs)
     return report, markdown_content
@@ -151,7 +155,7 @@ def load_prerecon_inputs(
     repo_virtual_path = "/" + repo_relative_to_project.as_posix()
     return PrereconInputs(
         target_url=url,
-        canonical_url=_canonical_url(url),
+        canonical_url=_canonical_url_util(url),
         repo_path=repo_path,
         repo_virtual_path=repo_virtual_path,
         repo_root_validated=True,
@@ -662,3 +666,69 @@ def _build_minimal_report(inputs: "PrereconInputs") -> PreReconReport:
         plan_inputs=inputs.plan_inputs,
         warnings=["Prerecon used markdown-first output mode; structured fields are empty."],
     )
+
+
+def write_prerecon_artifacts(
+    store: ArtifactStore,
+    *,
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    repo_path: str,
+    url: str,
+    effective_config_path: str,
+) -> list[Path]:
+    """Run the prerecon agent and write all phase artifacts.
+
+    Returns the list of written paths (pre_recon.json, pre_recon_analysis.md, evidence/baseline.json).
+    Raises on agent failure or schema validation errors — caller is responsible for wrapping in
+    Temporal ApplicationError as appropriate.
+    """
+    phase_dir = store.phase_dir("prerecon")
+
+    report, markdown_content = build_prerecon_report(
+        workspace_root=workspace_root,
+        workspace=workspace,
+        run_id=run_id,
+        repo_path=repo_path,
+        url=url,
+        config_path=effective_config_path,
+    )
+
+    # Write JSON artifact (minimal metadata for workflow)
+    pre_recon_path = phase_dir / "pre_recon.json"
+    pre_recon_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    if not validate_pre_recon(pre_recon_path):
+        raise ValueError("Invalid prerecon artifact generated.")
+
+    # Write markdown artifact — agent may have written it directly to the final path;
+    # write it here as a fallback or confirmation (idempotent if content matches).
+    markdown_path = phase_dir / "pre_recon_analysis.md"
+    markdown_path.write_text(
+        markdown_content or "# Pre-Recon Analysis\n\n_No content returned by agent._",
+        encoding="utf-8",
+    )
+
+    # Write evidence baseline
+    evidence_path = phase_dir / "evidence" / "baseline.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "target_url": report.target_url,
+                "canonical_url": report.canonical_url,
+                "framework_signals": [item.model_dump(mode="json") for item in report.framework_signals],
+                "candidate_routes": [item.model_dump(mode="json") for item in report.candidate_routes],
+                "auth_signals": [item.model_dump(mode="json") for item in report.auth_signals],
+                "schema_files": [item.model_dump(mode="json") for item in report.schema_files],
+                "external_integrations": [item.model_dump(mode="json") for item in report.external_integrations],
+                "security_config": [item.model_dump(mode="json") for item in report.security_config],
+                "vulnerability_sinks": [item.model_dump(mode="json") for item in report.vulnerability_sinks],
+                "data_flow_patterns": [item.model_dump(mode="json") for item in report.data_flow_patterns],
+                "scope_inputs": report.scope_inputs,
+                "plan_inputs": report.plan_inputs,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return [pre_recon_path, markdown_path, evidence_path]

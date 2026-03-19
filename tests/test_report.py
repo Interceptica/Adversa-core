@@ -2,14 +2,14 @@
 
 Covers:
 - RetestStep / RetestPlan schema validation
-- Markdown generation (report + exec summary) for empty and populated VulnReport
 - RetestPlan generation (ordering, verification steps)
-- build_report() dict keys
+- write_report_artifacts() retest plan portion (pure Python)
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,11 +20,7 @@ from adversa.state.models import (
     VulnerabilityFinding,
     VulnReport,
 )
-from adversa.report.reports import (
-    generate_exec_summary_markdown,
-    generate_retest_plan,
-    generate_report_markdown,
-)
+from adversa.report.reports import generate_retest_plan
 
 
 # ── Fixture helpers ───────────────────────────────────────────────────────────
@@ -185,124 +181,6 @@ def test_retest_plan_empty_steps_allowed() -> None:
     assert plan.retest_steps == []
 
 
-# ── generate_report_markdown tests ───────────────────────────────────────────
-
-
-def test_generate_report_markdown_empty() -> None:
-    report = _empty_vuln_report()
-    md = generate_report_markdown(report, {}, {})
-
-    for header in [
-        "## 1. Executive Summary",
-        "## 2. Scope & Methodology",
-        "## 3. Findings Summary",
-        "## 4. Finding Details",
-        "## 5. Dominant Vulnerability Patterns",
-        "## 6. Secure Vectors",
-        "## 7. Analysis Constraints & Coverage Gaps",
-    ]:
-        assert header in md, f"Missing section: {header!r}"
-
-
-def test_generate_report_markdown_findings_table() -> None:
-    report = _populated_vuln_report()
-    md = generate_report_markdown(report, {}, {})
-
-    # Each finding ID appears in the findings summary table
-    assert "INJ-001" in md
-    assert "XSS-001" in md
-    assert "AUTHZ-001" in md
-    # Table header
-    assert "| ID |" in md
-
-
-def test_generate_report_markdown_finding_detail() -> None:
-    report = _populated_vuln_report()
-    md = generate_report_markdown(report, {}, {})
-
-    # Section 4 finding detail blocks contain description and remediation
-    assert "Raw SQL query with user input." in md
-    assert "Use parameterized queries." in md
-
-
-def test_generate_report_markdown_dominant_patterns() -> None:
-    report = _populated_vuln_report()
-    md = generate_report_markdown(report, {}, {})
-
-    assert "Pattern 1: Missing input sanitization in /api/users" in md
-    assert "Pattern 1: Unescaped query parameter in search results" in md
-
-
-def test_generate_report_markdown_remediation_roadmap() -> None:
-    report = _populated_vuln_report()
-    md = generate_report_markdown(report, {}, {})
-
-    # Section 8 groups by severity
-    assert "## 8. Remediation Roadmap" in md
-    assert "CRITICAL" in md
-    assert "HIGH" in md
-
-
-# ── generate_exec_summary_markdown tests ─────────────────────────────────────
-
-
-def test_generate_exec_summary_empty() -> None:
-    report = _empty_vuln_report()
-    md = generate_exec_summary_markdown(report, {})
-
-    for header in [
-        "## 1. Assessment Overview",
-        "## 2. Risk Posture",
-        "## 3. Key Findings by Vulnerability Type",
-        "## 4. Top Priority Remediations",
-        "## 5. Recommended Next Steps",
-    ]:
-        assert header in md, f"Missing section: {header!r}"
-
-    # All 5 type paragraphs present (as "No X vulnerabilities" placeholders)
-    assert "No Injection" in md or "No injection" in md or "Injection" in md
-    assert "No Cross-Site Scripting" in md or "Cross-Site Scripting" in md
-
-
-def test_generate_exec_summary_no_vuln_messages() -> None:
-    """Each type paragraph should explicitly state no vulnerabilities when none found."""
-    report = _empty_vuln_report()
-    md = generate_exec_summary_markdown(report, {})
-
-    assert "No Injection" in md or "No injection" in md
-
-
-def test_generate_exec_summary_risk_posture_table() -> None:
-    report = _populated_vuln_report()
-    md = generate_exec_summary_markdown(report, {})
-
-    # Critical row should show count of 1 (INJ-001 is critical)
-    assert "| 🔴 Critical | 1 |" in md
-    # High row for XSS-001
-    assert "| 🟠 High | 1 |" in md
-
-
-def test_generate_exec_summary_per_type_paragraphs() -> None:
-    report = _populated_vuln_report()
-    md = generate_exec_summary_markdown(report, {})
-
-    # All 5 type labels appear
-    assert "Injection (SQL, Command, Template)" in md
-    assert "Cross-Site Scripting (XSS)" in md
-    assert "Server-Side Request Forgery (SSRF)" in md
-    assert "Authentication & Session Management" in md
-    assert "Authorization & Access Control" in md
-
-
-def test_generate_exec_summary_no_code_snippets() -> None:
-    """Exec summary must not contain code evidence blocks."""
-    report = _populated_vuln_report()
-    md = generate_exec_summary_markdown(report, {})
-
-    # No fenced code blocks
-    assert "```" not in md
-
-
 # ── generate_retest_plan tests ────────────────────────────────────────────────
 
 
@@ -392,54 +270,60 @@ def test_generate_retest_plan_total_findings_matches() -> None:
     assert len(plan.retest_steps) == plan.total_findings
 
 
-# ── build_report() integration test ──────────────────────────────────────────
+# ── write_report_artifacts integration tests ─────────────────────────────────
 
 
-def test_build_report_returns_all_keys(tmp_path: Path) -> None:
-    from adversa.report.controller import build_report
+def test_write_report_artifacts_retest_plan_and_evidence(tmp_path: Path) -> None:
+    """write_report_artifacts produces retest_plan.json and evidence/baseline.json via pure Python.
 
-    # Write a minimal VulnReport as findings.json
+    Mocks the LLM agent so no API key is required.
+    """
+    import adversa.report.controller as report_controller
+    from adversa.artifacts.store import ArtifactStore
+
+    # Set up vuln findings
     vuln_dir = tmp_path / "ws" / "run1" / "vuln"
     vuln_dir.mkdir(parents=True)
     vuln_report = _empty_vuln_report("https://example.com")
     (vuln_dir / "findings.json").write_text(vuln_report.model_dump_json(), encoding="utf-8")
 
-    result = build_report(
-        workspace_root=str(tmp_path),
-        workspace="ws",
-        run_id="run1",
-        repo_path="repos/target",
-        url="https://example.com",
-        config_path="adversa.toml",
-    )
+    store = ArtifactStore(tmp_path, "ws", "run1")
 
-    assert "report_md" in result
-    assert "exec_summary_md" in result
+    # Mock the LLM agent so it writes stub files but doesn't call real LLM
+    def _fake_agent_invoke(inp: dict) -> dict:
+        # Write stub report files to simulate agent output
+        report_dir = tmp_path / "ws" / "run1" / "report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "report.md").write_text("# Report\n\nStub.", encoding="utf-8")
+        (report_dir / "exec_summary.md").write_text("# Exec Summary\n\nStub.", encoding="utf-8")
+        return {}
+
+    mock_agent = MagicMock()
+    mock_agent.invoke.side_effect = _fake_agent_invoke
+
+    with patch.object(report_controller, "create_deep_agent", return_value=mock_agent):
+        with patch.object(report_controller, "ProviderClient") as mock_provider:
+            mock_provider.return_value.build_chat_model.return_value = MagicMock()
+            paths, result = report_controller.write_report_artifacts(
+                store,
+                workspace_root=str(tmp_path),
+                workspace="ws",
+                run_id="run1",
+                repo_path="repos/target",
+                url="https://example.com",
+                effective_config_path="adversa.toml",
+            )
+
     assert "retest_plan" in result
     assert "findings_summary" in result
-    assert isinstance(result["report_md"], str)
-    assert isinstance(result["exec_summary_md"], str)
     assert isinstance(result["retest_plan"], RetestPlan)
     assert isinstance(result["findings_summary"], dict)
-
-
-def test_build_report_graceful_without_vuln_artifacts(tmp_path: Path) -> None:
-    """build_report does not fail if vuln/findings.json does not exist."""
-    from adversa.report.controller import build_report
-
-    (tmp_path / "ws" / "run1").mkdir(parents=True)
-
-    result = build_report(
-        workspace_root=str(tmp_path),
-        workspace="ws",
-        run_id="run1",
-        repo_path="repos/target",
-        url="https://example.com",
-        config_path="adversa.toml",
-    )
-
     assert result["findings_summary"]["total"] == 0
-    assert result["retest_plan"].total_findings == 0
+
+    # Verify files were written
+    phase_dir = tmp_path / "ws" / "run1" / "report"
+    assert (phase_dir / "retest_plan.json").exists()
+    assert (phase_dir / "evidence" / "baseline.json").exists()
 
 
 def test_retest_plan_json_validates(tmp_path: Path) -> None:

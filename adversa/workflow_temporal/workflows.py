@@ -187,7 +187,7 @@ class AdversaRunWorkflow:
         try:
             await workflow.execute_activity(
                 provider_health_check,
-                args=[inp.model_dump()],
+                args=[inp.effective_config_path],
                 start_to_close_timeout=PHASE_ACTIVITY_TIMEOUT,
                 retry_policy=FAST_PHASE_RETRY_POLICY,
             )

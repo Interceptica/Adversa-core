@@ -1,25 +1,4 @@
-# Adversa — Docker Compose stack
-#
-# Services:
-#   postgresql   — Temporal persistence backend
-#   temporal     — Temporal server (workflow orchestration)
-#   temporal-ui  — Temporal Web UI (http://localhost:8080)
-#   adversa      — Adversa worker (consumes adversa-task-queue)
-#
-# Quick start:
-#   cp .env.example .env          # fill in NOVITA_API_KEY (or other provider key)
-#   docker compose up -d
-#   docker compose logs -f adversa
-#
-# Submit a scan (from host, after worker is running):
-#   docker compose exec adversa \
-#     uv run python -m adversa run \
-#       --repo repos/my-target \
-#       --url http://host.docker.internal:3000 \
-#       --workspace my-workspace \
-#       --i-acknowledge
-#
-# NOTE: Use host.docker.internal instead of localhost for apps on your host machine.
+
 
 # ─── Named volumes ────────────────────────────────────────────────────────────
 volumes:

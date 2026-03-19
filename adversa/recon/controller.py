@@ -18,14 +18,18 @@ from urllib.parse import urlparse
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 
+from adversa.agent_runtime.browser import RECON_BROWSER_TOOLS, playwright_tools_context
 from adversa.agent_runtime.context import AdversaAgentContext
 from adversa.agent_runtime.middleware import load_runtime_boundary_middleware
+from adversa.artifacts.store import ArtifactStore
 from adversa.config.load import load_config
 from adversa.llm.providers import ProviderClient
-from adversa.agent_runtime.browser import RECON_BROWSER_TOOLS, playwright_tools_context
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
 from adversa.state.models import ReconReport
+from adversa.state.schemas import validate_recon
+from adversa.utils.agent_output import extract_markdown_from_messages, read_agent_written_file
 from adversa.utils.markdown import load_upstream_markdown
+from adversa.utils.url import canonical_url as _canonical_url_util
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -75,8 +79,8 @@ async def build_recon_report(
     )
     model = ProviderClient(cfg.provider).build_chat_model(temperature=0)
 
-    output_virtual_path, disk_output_path = _compute_repo_output_paths(
-        repo_path, run_id, "recon_analysis.md"
+    output_virtual_path, disk_output_path = _compute_output_paths(
+        workspace_root, workspace, run_id, "recon", "recon_analysis.md"
     )
     output_dir_prefix = str(Path(output_virtual_path).parent) if output_virtual_path else None
 
@@ -107,9 +111,9 @@ async def build_recon_report(
             }
         )
 
-    markdown_content = _read_agent_written_file(disk_output_path)
+    markdown_content = read_agent_written_file(disk_output_path)
     if not markdown_content:
-        markdown_content = _extract_markdown_from_messages(result.get("messages", []))
+        markdown_content = extract_markdown_from_messages(result.get("messages", []))
 
     report = _build_minimal_report(inputs)
     return report, markdown_content
@@ -156,7 +160,7 @@ def load_recon_inputs(
     repo_virtual_path = "/" + repo_relative_to_project.as_posix()
     return ReconInputs(
         target_url=url,
-        canonical_url=_canonical_url(url),
+        canonical_url=_canonical_url_util(url),
         repo_path=repo_path,
         repo_virtual_path=repo_virtual_path,
         host=(parsed.hostname or "").lower(),
@@ -541,3 +545,63 @@ def _extract_json_from_messages(messages: list, schema_class: type) -> Any:
             except Exception:
                 continue
     return None
+
+
+async def write_recon_artifacts(
+    store: ArtifactStore,
+    *,
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    repo_path: str,
+    url: str,
+    effective_config_path: str,
+) -> list[Path]:
+    """Run the recon agent and write all phase artifacts.
+
+    Returns the list of written paths (recon.json, recon_analysis.md, evidence/baseline.json).
+    Raises on agent failure or schema validation errors.
+    """
+    phase_dir = store.phase_dir("recon")
+
+    report, markdown_content = await build_recon_report(
+        workspace_root=workspace_root,
+        workspace=workspace,
+        run_id=run_id,
+        repo_path=repo_path,
+        url=url,
+        config_path=effective_config_path,
+    )
+
+    recon_path = phase_dir / "recon.json"
+    recon_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    if not validate_recon(recon_path):
+        raise ValueError("Invalid recon artifact generated.")
+
+    markdown_path = phase_dir / "recon_analysis.md"
+    markdown_path.write_text(
+        markdown_content or "# Recon Analysis\n\n_No content returned by agent._",
+        encoding="utf-8",
+    )
+
+    evidence_path = phase_dir / "evidence" / "baseline.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "target_url": report.target_url,
+                "canonical_url": report.canonical_url,
+                "endpoints": [item.model_dump(mode="json") for item in report.endpoints],
+                "input_vectors": [item.model_dump(mode="json") for item in report.input_vectors],
+                "network_entities": [item.model_dump(mode="json") for item in report.network_entities],
+                "network_flows": [item.model_dump(mode="json") for item in report.network_flows],
+                "privilege_roles": [item.model_dump(mode="json") for item in report.privilege_roles],
+                "authz_candidates": [item.model_dump(mode="json") for item in report.authz_candidates],
+                "live_observations": report.live_observations,
+                "scope_inputs": report.scope_inputs,
+                "plan_inputs": report.plan_inputs,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return [recon_path, markdown_path, evidence_path]

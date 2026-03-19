@@ -148,21 +148,27 @@ phases = ["vuln"]
 def test_activity_persists_selected_analyzers_from_rules(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from adversa.state.models import ReconReport
     from adversa.workflow_temporal import activities as workflow_activities
 
-    async def _fake_recon(**kwargs):  # type: ignore[no-untyped-def]
-        return (
-            ReconReport(
-                target_url=kwargs["url"],
-                canonical_url=kwargs["url"],
-                host="staging.example.com",
-                path="/api/users",
-            ),
-            "# Recon Analysis\n\nStub.\n",
-        )
+    import json as _json
 
-    monkeypatch.setattr(workflow_activities, "build_recon_report", _fake_recon)
+    async def _fake_write_recon(store, *, workspace_root, workspace, run_id, repo_path, url, effective_config_path):  # type: ignore[no-untyped-def]
+        phase_dir = store.phase_dir("recon")
+        recon_path = phase_dir / "recon.json"
+        recon_path.write_text(_json.dumps({
+            "target_url": url, "canonical_url": url, "host": "staging.example.com", "path": "/api/users",
+            "endpoints": [], "input_vectors": [], "network_entities": [], "network_flows": [],
+            "authorization_guards": [], "privilege_roles": [], "authz_candidates": [],
+            "live_observations": [], "scope_inputs": {}, "plan_inputs": {},
+            "warnings": [], "remediation_hints": [],
+        }), encoding="utf-8")
+        md_path = phase_dir / "recon_analysis.md"
+        md_path.write_text("# Recon Analysis\n\nStub.\n", encoding="utf-8")
+        evidence_path = phase_dir / "evidence" / "baseline.json"
+        evidence_path.write_text(_json.dumps({}), encoding="utf-8")
+        return [recon_path, md_path, evidence_path]
+
+    monkeypatch.setattr(workflow_activities, "write_recon_artifacts", _fake_write_recon)
 
     config_path = tmp_path / "adversa.toml"
     config_path.write_text(

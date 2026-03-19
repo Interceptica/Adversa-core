@@ -59,6 +59,16 @@ Use browser tools to verify and supplement code analysis findings:
 4. Navigate key routes from the endpoint inventory — confirm reachability and auth enforcement
 5. Record all live observations in `live_observations` (do not navigate out-of-scope hosts)
 
+CRITICAL browser tool rules — failure to follow these causes the workflow to hang:
+- NEVER call two browser tools in parallel. All browser tool calls must be strictly sequential.
+- NEVER use browser_click with a ref from a previous snapshot. Refs expire after any page change.
+  Instead use: browser_evaluate with JS (document.querySelector(...).click()) to interact with elements.
+- If browser_snapshot returns about:blank, call browser_navigate again before anything else.
+- Do NOT attempt to dismiss cookie banners or modal dialogs by clicking — skip them.
+  Navigate directly to API endpoints (e.g. /rest/products/search, /api/Users) where there are no UI overlays.
+- If a browser_click fails once, do NOT retry the same click. Move on to the next verification step.
+- Limit browser verification to 5 sequential navigations maximum, then stop and synthesize.
+
 Phase 4: Synthesize into ReconReport
 Correlate code analysis with live observations:
 - Populate `endpoints` from route-mapper results, enriched with live auth verification

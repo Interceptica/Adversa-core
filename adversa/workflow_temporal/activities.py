@@ -16,14 +16,17 @@ from adversa.intake.plan import build_run_plan
 from adversa.llm.errors import LLMErrorKind, LLMProviderError
 from adversa.llm.providers import ProviderClient
 from adversa.logging.audit import AuditLogger
-from adversa.prerecon.controller import build_prerecon_report
-from adversa.recon.controller import build_recon_report
-from adversa.report.controller import build_report
-from adversa.vuln.controller import build_vuln_report
 from adversa.security.rule_compiler import compile_rules
 from adversa.security.rules import RuntimeTarget, evaluate_rules
 from adversa.state.models import EvidenceRef, ManifestState, PhaseOutput
-from adversa.state.schemas import validate_phase_output, validate_pre_recon, validate_recon, validate_retest_plan, validate_vuln
+from adversa.state.schemas import validate_phase_output
+
+# Phase artifact writers — imported at module level so tests can monkeypatch them.
+from adversa.prerecon.controller import write_prerecon_artifacts
+from adversa.netdisc.controller import write_netdisc_artifacts
+from adversa.recon.controller import write_recon_artifacts
+from adversa.vuln.controller import write_vuln_artifacts
+from adversa.report.controller import write_report_artifacts
 
 
 PHASE_EXTRA_ARTIFACTS: dict[str, dict[str, object]] = {
@@ -113,322 +116,6 @@ def _write_extra_phase_artifacts(
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         written.append(path)
     return written
-
-
-def _write_prerecon_artifacts(
-    store: ArtifactStore,
-    *,
-    workspace_root: str,
-    workspace: str,
-    run_id: str,
-    repo_path: str,
-    url: str,
-    effective_config_path: str,
-) -> list[Path]:
-    phase_dir = store.phase_dir("prerecon")
-    try:
-        report, markdown_content = build_prerecon_report(
-            workspace_root=workspace_root,
-            workspace=workspace,
-            run_id=run_id,
-            repo_path=repo_path,
-            url=url,
-            config_path=effective_config_path,
-        )
-    except Exception as exc:
-        classified = classify_provider_error(exc)
-        raise ApplicationError(
-            str(classified),
-            type=classified.kind.value,
-            non_retryable=classified.kind != LLMErrorKind.TRANSIENT,
-        ) from exc
-    # Write JSON artifact (minimal metadata for workflow)
-    pre_recon_path = phase_dir / "pre_recon.json"
-    pre_recon_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-    if not validate_pre_recon(pre_recon_path):
-        raise ApplicationError("Invalid prerecon artifact generated.", type="invalid_prerecon_output", non_retryable=True)
-
-    # Write markdown artifact — agent-generated, written directly
-    markdown_path = phase_dir / "pre_recon_analysis.md"
-    markdown_path.write_text(markdown_content or "# Pre-Recon Analysis\n\n_No content returned by agent._", encoding="utf-8")
-
-    # Write evidence baseline
-    evidence_path = phase_dir / "evidence" / "baseline.json"
-    evidence_path.write_text(
-        json.dumps(
-            {
-                "target_url": report.target_url,
-                "canonical_url": report.canonical_url,
-                "framework_signals": [item.model_dump(mode="json") for item in report.framework_signals],
-                "candidate_routes": [item.model_dump(mode="json") for item in report.candidate_routes],
-                "auth_signals": [item.model_dump(mode="json") for item in report.auth_signals],
-                "schema_files": [item.model_dump(mode="json") for item in report.schema_files],
-                "external_integrations": [item.model_dump(mode="json") for item in report.external_integrations],
-                "security_config": [item.model_dump(mode="json") for item in report.security_config],
-                "vulnerability_sinks": [item.model_dump(mode="json") for item in report.vulnerability_sinks],
-                "data_flow_patterns": [item.model_dump(mode="json") for item in report.data_flow_patterns],
-                "scope_inputs": report.scope_inputs,
-                "plan_inputs": report.plan_inputs,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return [pre_recon_path, markdown_path, evidence_path]
-
-
-async def _write_netdisc_artifacts(
-    store: ArtifactStore,
-    *,
-    workspace_root: str,
-    workspace: str,
-    run_id: str,
-    repo_path: str,
-    url: str,
-    effective_config_path: str,
-) -> list[Path]:
-    """Write network discovery artifacts for the netdisc phase."""
-    from adversa.netdisc.controller import build_network_discovery_report
-    from adversa.state.schemas import validate_network_discovery
-
-    phase_dir = store.phase_dir("netdisc")
-    try:
-        report = await build_network_discovery_report(
-            workspace_root=workspace_root,
-            workspace=workspace,
-            run_id=run_id,
-            repo_path=repo_path,
-            url=url,
-            config_path=effective_config_path,
-        )
-    except Exception as exc:
-        classified = classify_provider_error(exc)
-        raise ApplicationError(
-            str(classified),
-            type=classified.kind.value,
-            non_retryable=classified.kind != LLMErrorKind.TRANSIENT,
-        ) from exc
-
-    network_discovery_path = phase_dir / "network_discovery.json"
-    network_discovery_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-    if not validate_network_discovery(network_discovery_path):
-        raise ApplicationError("Invalid netdisc artifact generated.", type="invalid_netdisc_output", non_retryable=True)
-
-    from adversa.netdisc.reports import generate_netdisc_markdown
-
-    markdown_content = generate_netdisc_markdown(report)
-    markdown_path = phase_dir / "network_discovery.md"
-    markdown_path.write_text(markdown_content, encoding="utf-8")
-
-    evidence_path = phase_dir / "evidence" / "baseline.json"
-    evidence_path.write_text(
-        json.dumps(
-            {
-                "target_url": report.target_url,
-                "canonical_url": report.canonical_url,
-                "discovered_hosts": [item.model_dump(mode="json") for item in report.discovered_hosts],
-                "service_fingerprints": [item.model_dump(mode="json") for item in report.service_fingerprints],
-                "tls_observations": [item.model_dump(mode="json") for item in report.tls_observations],
-                "port_services": [item.model_dump(mode="json") for item in report.port_services],
-                "scope_inputs": report.scope_inputs,
-                "plan_inputs": report.plan_inputs,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return [network_discovery_path, markdown_path, evidence_path]
-
-
-async def _write_recon_artifacts(
-    store: ArtifactStore,
-    *,
-    workspace_root: str,
-    workspace: str,
-    run_id: str,
-    repo_path: str,
-    url: str,
-    effective_config_path: str,
-) -> list[Path]:
-    """Write recon attack surface map artifacts."""
-    phase_dir = store.phase_dir("recon")
-    try:
-        report, markdown_content = await build_recon_report(
-            workspace_root=workspace_root,
-            workspace=workspace,
-            run_id=run_id,
-            repo_path=repo_path,
-            url=url,
-            config_path=effective_config_path,
-        )
-    except Exception as exc:
-        classified = classify_provider_error(exc)
-        raise ApplicationError(
-            str(classified),
-            type=classified.kind.value,
-            non_retryable=classified.kind != LLMErrorKind.TRANSIENT,
-        ) from exc
-
-    recon_path = phase_dir / "recon.json"
-    recon_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-    if not validate_recon(recon_path):
-        raise ApplicationError("Invalid recon artifact generated.", type="invalid_recon_output", non_retryable=True)
-
-    markdown_path = phase_dir / "recon_analysis.md"
-    markdown_path.write_text(markdown_content or "# Recon Analysis\n\n_No content returned by agent._", encoding="utf-8")
-
-    evidence_path = phase_dir / "evidence" / "baseline.json"
-    evidence_path.write_text(
-        json.dumps(
-            {
-                "target_url": report.target_url,
-                "canonical_url": report.canonical_url,
-                "endpoints": [item.model_dump(mode="json") for item in report.endpoints],
-                "input_vectors": [item.model_dump(mode="json") for item in report.input_vectors],
-                "network_entities": [item.model_dump(mode="json") for item in report.network_entities],
-                "network_flows": [item.model_dump(mode="json") for item in report.network_flows],
-                "privilege_roles": [item.model_dump(mode="json") for item in report.privilege_roles],
-                "authz_candidates": [item.model_dump(mode="json") for item in report.authz_candidates],
-                "live_observations": report.live_observations,
-                "scope_inputs": report.scope_inputs,
-                "plan_inputs": report.plan_inputs,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return [recon_path, markdown_path, evidence_path]
-
-
-async def _write_vuln_artifacts(
-    store: ArtifactStore,
-    *,
-    workspace_root: str,
-    workspace: str,
-    run_id: str,
-    repo_path: str,
-    url: str,
-    effective_config_path: str,
-) -> list[Path]:
-    """Write vulnerability analysis artifacts for the vuln phase."""
-    from adversa.vuln.reports import generate_vuln_markdown
-
-    phase_dir = store.phase_dir("vuln")
-    try:
-        report = await build_vuln_report(
-            workspace_root=workspace_root,
-            workspace=workspace,
-            run_id=run_id,
-            repo_path=repo_path,
-            url=url,
-            config_path=effective_config_path,
-        )
-    except Exception as exc:
-        classified = classify_provider_error(exc)
-        raise ApplicationError(
-            str(classified),
-            type=classified.kind.value,
-            non_retryable=classified.kind != LLMErrorKind.TRANSIENT,
-        ) from exc
-
-    findings_path = phase_dir / "findings.json"
-    findings_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-    if not validate_vuln(findings_path):
-        raise ApplicationError("Invalid vuln artifact generated.", type="invalid_vuln_output", non_retryable=True)
-
-    markdown_content = generate_vuln_markdown(report)
-    markdown_path = phase_dir / "vuln_analysis.md"
-    markdown_path.write_text(markdown_content, encoding="utf-8")
-
-    all_findings = report.all_findings
-    risk_register = {
-        "critical": [f.model_dump(mode="json") for f in all_findings if f.severity == "critical"],
-        "high": [f.model_dump(mode="json") for f in all_findings if f.severity == "high"],
-        "medium": [f.model_dump(mode="json") for f in all_findings if f.severity == "medium"],
-        "low": [f.model_dump(mode="json") for f in all_findings if f.severity == "low"],
-        "info": [f.model_dump(mode="json") for f in all_findings if f.severity == "info"],
-    }
-    risk_path = phase_dir / "risk_register.json"
-    risk_path.write_text(json.dumps(risk_register, indent=2), encoding="utf-8")
-
-    evidence_path = phase_dir / "evidence" / "baseline.json"
-    evidence_path.write_text(
-        json.dumps(
-            {
-                "target_url": report.target_url,
-                "canonical_url": report.canonical_url,
-                "findings": [f.model_dump(mode="json") for f in all_findings],
-                "secure_vectors": {
-                    "injection": report.injection.secure_vectors,
-                    "xss": report.xss.secure_vectors,
-                    "ssrf": report.ssrf.secure_vectors,
-                    "auth": report.auth.secure_vectors,
-                    "authz": report.authz.secure_vectors,
-                },
-                "scope_inputs": report.scope_inputs,
-                "plan_inputs": report.plan_inputs,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return [findings_path, markdown_path, risk_path, evidence_path]
-
-
-def _write_report_artifacts(
-    store: ArtifactStore,
-    *,
-    workspace_root: str,
-    workspace: str,
-    run_id: str,
-    repo_path: str,
-    url: str,
-    effective_config_path: str,
-) -> tuple[list[Path], dict]:
-    """Write report phase artifacts (pure Python synthesis, no LLM/Playwright).
-
-    Returns (paths, result) where result is the dict from build_report().
-    """
-    phase_dir = store.phase_dir("report")
-
-    result = build_report(
-        workspace_root=workspace_root,
-        workspace=workspace,
-        run_id=run_id,
-        repo_path=repo_path,
-        url=url,
-        config_path=effective_config_path,
-    )
-
-    report_path = phase_dir / "report.md"
-    report_path.write_text(result["report_md"], encoding="utf-8")
-
-    exec_path = phase_dir / "exec_summary.md"
-    exec_path.write_text(result["exec_summary_md"], encoding="utf-8")
-
-    retest_plan = result["retest_plan"]
-    retest_path = phase_dir / "retest_plan.json"
-    retest_path.write_text(retest_plan.model_dump_json(indent=2), encoding="utf-8")
-    if not validate_retest_plan(retest_path):
-        raise ApplicationError("Invalid retest plan generated.", type="invalid_report_output", non_retryable=True)
-
-    findings_summary = result["findings_summary"]
-    evidence_path = phase_dir / "evidence" / "baseline.json"
-    evidence_path.write_text(
-        json.dumps(
-            {
-                "target_url": retest_plan.target_url,
-                "generated_at": retest_plan.generated_at,
-                "total_findings": retest_plan.total_findings,
-                "findings_summary": findings_summary,
-                "retest_steps": [step.model_dump(mode="json") for step in retest_plan.retest_steps],
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    return [report_path, exec_path, retest_path, evidence_path], result
 
 
 async def _run_phase_impl(
@@ -547,17 +234,25 @@ async def _run_phase_impl(
         },
     }
     extra_files: list[Path] = []
+
+    _REAL_PHASES = ("prerecon", "netdisc", "recon", "vuln", "report")
+
     if phase == "prerecon":
-        extra_files = await asyncio.to_thread(
-            _write_prerecon_artifacts,
-            store,
-            workspace_root=workspace_root,
-            workspace=workspace,
-            run_id=run_id,
-            repo_path=repo_path,
-            url=url,
-            effective_config_path=effective_config_path,
-        )
+        try:
+            extra_files = await asyncio.to_thread(
+                write_prerecon_artifacts,
+                store,
+                workspace_root=workspace_root,
+                workspace=workspace,
+                run_id=run_id,
+                repo_path=repo_path,
+                url=url,
+                effective_config_path=effective_config_path,
+            )
+        except ApplicationError:
+            raise
+        except Exception as exc:
+            raise to_activity_error(exc) from exc
         prerecon_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
         phase_summary = (
             f"Prerecon inspected host '{prerecon_payload['host']}' and inferred "
@@ -589,16 +284,21 @@ async def _run_phase_impl(
             "warnings": prerecon_payload["warnings"],
         }
 
-    if phase == "netdisc":
-        extra_files = await _write_netdisc_artifacts(
-            store,
-            workspace_root=workspace_root,
-            workspace=workspace,
-            run_id=run_id,
-            repo_path=repo_path,
-            url=url,
-            effective_config_path=effective_config_path,
-        )
+    elif phase == "netdisc":
+        try:
+            extra_files = await write_netdisc_artifacts(
+                store,
+                workspace_root=workspace_root,
+                workspace=workspace,
+                run_id=run_id,
+                repo_path=repo_path,
+                url=url,
+                effective_config_path=effective_config_path,
+            )
+        except ApplicationError:
+            raise
+        except Exception as exc:
+            raise to_activity_error(exc) from exc
         netdisc_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
         phase_summary = (
             f"Network discovery found {len(netdisc_payload['discovered_hosts'])} hosts "
@@ -628,16 +328,21 @@ async def _run_phase_impl(
             "warnings": netdisc_payload["warnings"],
         }
 
-    if phase == "recon":
-        extra_files = await _write_recon_artifacts(
-            store,
-            workspace_root=workspace_root,
-            workspace=workspace,
-            run_id=run_id,
-            repo_path=repo_path,
-            url=url,
-            effective_config_path=effective_config_path,
-        )
+    elif phase == "recon":
+        try:
+            extra_files = await write_recon_artifacts(
+                store,
+                workspace_root=workspace_root,
+                workspace=workspace,
+                run_id=run_id,
+                repo_path=repo_path,
+                url=url,
+                effective_config_path=effective_config_path,
+            )
+        except ApplicationError:
+            raise
+        except Exception as exc:
+            raise to_activity_error(exc) from exc
         recon_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
         phase_summary = (
             f"Recon mapped {len(recon_payload['endpoints'])} endpoints, "
@@ -668,16 +373,21 @@ async def _run_phase_impl(
             "warnings": recon_payload["warnings"],
         }
 
-    if phase == "vuln":
-        extra_files = await _write_vuln_artifacts(
-            store,
-            workspace_root=workspace_root,
-            workspace=workspace,
-            run_id=run_id,
-            repo_path=repo_path,
-            url=url,
-            effective_config_path=effective_config_path,
-        )
+    elif phase == "vuln":
+        try:
+            extra_files = await write_vuln_artifacts(
+                store,
+                workspace_root=workspace_root,
+                workspace=workspace,
+                run_id=run_id,
+                repo_path=repo_path,
+                url=url,
+                effective_config_path=effective_config_path,
+            )
+        except ApplicationError:
+            raise
+        except Exception as exc:
+            raise to_activity_error(exc) from exc
         vuln_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
         all_findings = (
             vuln_payload.get("injection", {}).get("findings", [])
@@ -720,16 +430,21 @@ async def _run_phase_impl(
 
     _report_result: dict = {}
     if phase == "report":
-        extra_files, _report_result = await asyncio.to_thread(
-            _write_report_artifacts,
-            store,
-            workspace_root=workspace_root,
-            workspace=workspace,
-            run_id=run_id,
-            repo_path=repo_path,
-            url=url,
-            effective_config_path=effective_config_path,
-        )
+        try:
+            extra_files, _report_result = await asyncio.to_thread(
+                write_report_artifacts,
+                store,
+                workspace_root=workspace_root,
+                workspace=workspace,
+                run_id=run_id,
+                repo_path=repo_path,
+                url=url,
+                effective_config_path=effective_config_path,
+            )
+        except ApplicationError:
+            raise
+        except Exception as exc:
+            raise to_activity_error(exc) from exc
         retest_plan = _report_result["retest_plan"]
         fs = _report_result["findings_summary"]
         critical_count = fs["critical"]
@@ -744,7 +459,7 @@ async def _run_phase_impl(
             "agent_name": "adversa-report",
             "middleware": agent_execution.middleware,
             "executed": True,
-            "runner": "synthesis",
+            "runner": "llm-synthesis",
         }
         evidence = [
             EvidenceRef(
@@ -784,6 +499,7 @@ async def _run_phase_impl(
         )
         raise ApplicationError(message, type="invalid_phase_output", non_retryable=True)
 
+    # Overwrite the stub coverage.json with real phase-specific data
     if phase == "prerecon":
         prerecon_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
         files["coverage"].write_text(
@@ -804,7 +520,7 @@ async def _run_phase_impl(
             encoding="utf-8",
         )
 
-    if phase == "netdisc":
+    elif phase == "netdisc":
         netdisc_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
         files["coverage"].write_text(
             json.dumps(
@@ -824,7 +540,7 @@ async def _run_phase_impl(
             encoding="utf-8",
         )
 
-    if phase == "recon":
+    elif phase == "recon":
         recon_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
         files["coverage"].write_text(
             json.dumps(
@@ -847,7 +563,7 @@ async def _run_phase_impl(
             encoding="utf-8",
         )
 
-    if phase == "vuln":
+    elif phase == "vuln":
         vuln_payload = json.loads(extra_files[0].read_text(encoding="utf-8"))
         _all = (
             vuln_payload.get("injection", {}).get("findings", [])
@@ -877,7 +593,7 @@ async def _run_phase_impl(
             encoding="utf-8",
         )
 
-    if phase == "report" and _report_result:
+    elif phase == "report" and _report_result:
         fs = _report_result["findings_summary"]
         retest_plan = _report_result["retest_plan"]
         files["coverage"].write_text(
@@ -899,7 +615,6 @@ async def _run_phase_impl(
             encoding="utf-8",
         )
 
-    _REAL_PHASES = ("prerecon", "netdisc", "recon", "vuln", "report")
     evidence_path = store.phase_dir(phase) / "evidence" / "stub.txt"
     if phase not in _REAL_PHASES:
         evidence_path.write_text("evidence", encoding="utf-8")
@@ -986,8 +701,8 @@ async def run_phase_activity(workspace_root: str, workspace: str, run_id: str, r
 
 
 @activity.defn
-async def provider_health_check(config: dict) -> None:
-    cfg = AdversaConfig.model_validate(config)
+async def provider_health_check(effective_config_path: str) -> None:
+    cfg = load_config(effective_config_path)
     logs_dir = Path(cfg.run.workspace_root) / "_system" / "provider_health" / "logs"
     audit = AuditLogger(logs_dir)
     audit.log_tool_call(

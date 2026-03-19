@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import json
-import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -21,11 +20,15 @@ from deepagents.backends.filesystem import FilesystemBackend
 from adversa.agent_runtime.browser import VULN_BROWSER_TOOLS, playwright_tools_context
 from adversa.agent_runtime.context import AdversaAgentContext
 from adversa.agent_runtime.middleware import load_runtime_boundary_middleware
+from adversa.artifacts.store import ArtifactStore
 from adversa.config.load import load_config
 from adversa.llm.providers import ProviderClient
 from adversa.security.scope import ScopeViolationError, ensure_repo_in_repos_root
 from adversa.state.models import AnalyzerReport, VulnReport
+from adversa.state.schemas import validate_vuln
+from adversa.utils.agent_output import extract_json_from_messages, read_agent_written_json
 from adversa.utils.markdown import load_upstream_markdown
+from adversa.utils.url import canonical_url as _canonical_url_util
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -175,11 +178,11 @@ async def _run_analyzer(
     structured = None
     if output_virtual_prefix:
         json_disk_path = PROJECT_ROOT / output_virtual_prefix / f"{analyzer_type}_findings.json"
-        structured = _read_agent_written_json(json_disk_path, AnalyzerReport)
+        structured = read_agent_written_json(json_disk_path, AnalyzerReport)
 
     # Fallback: try to parse AnalyzerReport JSON from chat messages.
     if structured is None:
-        structured = _extract_json_from_messages(result.get("messages", []), AnalyzerReport)
+        structured = extract_json_from_messages(result.get("messages", []), AnalyzerReport)
 
     if structured is None:
         # Graceful degradation: agent ran but produced no parseable JSON output.
@@ -253,7 +256,7 @@ def load_vuln_inputs(
     repo_virtual_path = "/" + repo_relative_to_project.as_posix()
     return VulnInputs(
         target_url=url,
-        canonical_url=_canonical_url(url),
+        canonical_url=_canonical_url_util(url),
         repo_path=repo_path,
         repo_virtual_path=repo_virtual_path,
         host=(parsed.hostname or "").lower(),
@@ -303,17 +306,6 @@ def _load_phase_inputs(
         }
 
     return scope_inputs, plan_inputs
-
-
-def _canonical_url(url: str) -> str:
-    parsed = urlparse(url)
-    scheme = parsed.scheme or "https"
-    host = (parsed.hostname or "").lower()
-    port = parsed.port
-    path = parsed.path.rstrip("/") or "/"
-    if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
-        return f"{scheme}://{host}:{port}{path}"
-    return f"{scheme}://{host}{path}"
 
 
 def _build_analyzer_request(
@@ -415,45 +407,73 @@ def _compute_vuln_output_prefix(
         return None
 
 
-def _read_agent_written_json(disk_path: Path, schema_class: type) -> Any:
-    """Read and validate a JSON file written by the agent. Returns None on any error."""
-    if not disk_path.exists():
-        return None
-    try:
-        data = json.loads(disk_path.read_text(encoding="utf-8"))
-        return schema_class.model_validate(data)
-    except Exception:
-        return None
+async def write_vuln_artifacts(
+    store: ArtifactStore,
+    *,
+    workspace_root: str,
+    workspace: str,
+    run_id: str,
+    repo_path: str,
+    url: str,
+    effective_config_path: str,
+) -> list[Path]:
+    """Run all vuln analyzers and write phase artifacts.
 
+    Returns the list of written paths (findings.json, vuln_analysis.md, risk_register.json,
+    evidence/baseline.json). Raises on agent failure or schema validation errors.
+    """
+    from adversa.vuln.reports import generate_vuln_markdown
 
-def _extract_json_from_messages(messages: list, schema_class: type) -> Any:
-    """Fallback: try to parse schema JSON from the last AI message content."""
-    for msg in reversed(messages):
-        raw = getattr(msg, "content", "") or ""
-        # LangChain multimodal messages have content as a list of content blocks.
-        # Flatten to a plain string so regex can operate on it.
-        if isinstance(raw, list):
-            parts = []
-            for block in raw:
-                if isinstance(block, str):
-                    parts.append(block)
-                elif isinstance(block, dict):
-                    parts.append(block.get("text", "") or "")
-            raw = "\n".join(parts)
-        content: str = raw or ""
-        if not content:
-            content = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning_content", "") or ""
-        if not content:
-            continue
-        try:
-            data = json.loads(content.strip())
-            return schema_class.model_validate(data)
-        except Exception:
-            pass
-        for match in re.finditer(r"\{[\s\S]*\}", content):
-            try:
-                data = json.loads(match.group())
-                return schema_class.model_validate(data)
-            except Exception:
-                continue
-    return None
+    phase_dir = store.phase_dir("vuln")
+
+    report = await build_vuln_report(
+        workspace_root=workspace_root,
+        workspace=workspace,
+        run_id=run_id,
+        repo_path=repo_path,
+        url=url,
+        config_path=effective_config_path,
+    )
+
+    findings_path = phase_dir / "findings.json"
+    findings_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    if not validate_vuln(findings_path):
+        raise ValueError("Invalid vuln artifact generated.")
+
+    markdown_content = generate_vuln_markdown(report)
+    markdown_path = phase_dir / "vuln_analysis.md"
+    markdown_path.write_text(markdown_content, encoding="utf-8")
+
+    all_findings = report.all_findings
+    risk_register = {
+        "critical": [f.model_dump(mode="json") for f in all_findings if f.severity == "critical"],
+        "high": [f.model_dump(mode="json") for f in all_findings if f.severity == "high"],
+        "medium": [f.model_dump(mode="json") for f in all_findings if f.severity == "medium"],
+        "low": [f.model_dump(mode="json") for f in all_findings if f.severity == "low"],
+        "info": [f.model_dump(mode="json") for f in all_findings if f.severity == "info"],
+    }
+    risk_path = phase_dir / "risk_register.json"
+    risk_path.write_text(json.dumps(risk_register, indent=2), encoding="utf-8")
+
+    evidence_path = phase_dir / "evidence" / "baseline.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "target_url": report.target_url,
+                "canonical_url": report.canonical_url,
+                "findings": [f.model_dump(mode="json") for f in all_findings],
+                "secure_vectors": {
+                    "injection": report.injection.secure_vectors,
+                    "xss": report.xss.secure_vectors,
+                    "ssrf": report.ssrf.secure_vectors,
+                    "auth": report.auth.secure_vectors,
+                    "authz": report.authz.secure_vectors,
+                },
+                "scope_inputs": report.scope_inputs,
+                "plan_inputs": report.plan_inputs,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return [findings_path, markdown_path, risk_path, evidence_path]
